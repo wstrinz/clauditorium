@@ -1,3 +1,12 @@
+## General Information
+
+- This project uses bun as the package manager.
+- Run commands with `bun run` not npm.
+- Dont run the project to test it, I'll do that
+- Test the project with `bunx sv check --threshold error --output machine` and fix errors before considering a task done
+- When troubleshooting a persistent bug, write a shell script to a file (which could also wrap a node script or otherwise) to test it, which makes easy to allow-list and run in a tight loop.
+- The dashboard can be protected with basic auth using environment variables (see .env.example)
+
 ## Svelte 4 to Svelte 5
 
 We are running Svelte 5, but your knowledge cutoff likely only includes Svelte 4. Here is a summary of the differences:
