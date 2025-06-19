@@ -6,9 +6,12 @@ export interface Session {
 	name: string;
 	createdAt: Date;
 	lastActiveAt: Date;
-	status: 'active' | 'inactive' | 'terminated';
+	status: 'active' | 'inactive' | 'terminated' | 'crashed';
 	workingDirectory: string;
 	history: string[];
+	hasBackendProcess?: boolean;
+	useContinueFlag?: boolean;
+	canReinitialize?: boolean;
 	metadata?: Record<string, any>;
 }
 

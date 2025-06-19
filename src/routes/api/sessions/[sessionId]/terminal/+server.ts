@@ -1,5 +1,6 @@
 import type { RequestHandler } from './$types';
 import { getSession, addOutputHandler, removeOutputHandler } from '../../session-store';
+import * as sessionDb from '$lib/server/services/session-db';
 
 export const POST: RequestHandler = async ({ params, request }) => {
 	const { sessionId } = params;
@@ -15,6 +16,19 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		// Write input to the Claude process via PTY
 		if (session.process && input) {
 			session.process.write(input);
+			
+			// Save input to database
+			await sessionDb.addSessionHistory({
+				sessionId,
+				timestamp: new Date(),
+				type: 'input',
+				content: input
+			});
+			
+			// Update last active time
+			await sessionDb.updateSession(sessionId, {
+				lastActiveAt: new Date()
+			});
 		}
 		
 		return new Response('OK');

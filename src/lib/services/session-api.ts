@@ -1,20 +1,26 @@
 export interface SessionInfo {
 	sessionId: string;
+	name: string;
 	createdAt: Date;
+	lastActiveAt: Date;
 	workingDirectory: string;
-	status: string;
+	status: 'active' | 'inactive' | 'terminated' | 'crashed';
+	hasBackendProcess: boolean;
+	useContinueFlag: boolean;
+	canReinitialize: boolean;
+	metadata?: Record<string, any>;
 }
 
 export class SessionAPI {
 	private eventSources = new Map<string, EventSource>();
 
-	async createSession(workingDirectory?: string): Promise<SessionInfo> {
+	async createSession(name: string, workingDirectory?: string, useContinueFlag?: boolean): Promise<SessionInfo> {
 		const response = await fetch('/api/sessions', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify({ workingDirectory })
+			body: JSON.stringify({ name, workingDirectory, useContinueFlag })
 		});
 
 		if (!response.ok) {
@@ -76,29 +82,36 @@ export class SessionAPI {
 		}
 	}
 
-	connectToSession(sessionId: string, onOutput: (data: string) => void): void {
-		// Close existing connection if any
-		this.disconnectFromSession(sessionId);
-
-		const eventSource = new EventSource(`/api/sessions/${sessionId}/terminal`);
-		
-		eventSource.onmessage = (event) => {
-			try {
-				const message = JSON.parse(event.data);
-				if (message.type === 'output') {
-					onOutput(message.data);
-				}
-			} catch (error) {
-				console.error('Failed to parse message:', error);
-			}
-		};
-
-		eventSource.onerror = (error) => {
-			console.error('EventSource error:', error);
+	connectToSession(sessionId: string, onOutput: (data: string) => void): Promise<void> {
+		return new Promise((resolve, reject) => {
+			// Close existing connection if any
 			this.disconnectFromSession(sessionId);
-		};
 
-		this.eventSources.set(sessionId, eventSource);
+			const eventSource = new EventSource(`/api/sessions/${sessionId}/terminal`);
+			
+			eventSource.onopen = () => {
+				resolve();
+			};
+
+			eventSource.onmessage = (event) => {
+				try {
+					const message = JSON.parse(event.data);
+					if (message.type === 'output') {
+						onOutput(message.data);
+					}
+				} catch (error) {
+					console.error('Failed to parse message:', error);
+				}
+			};
+
+			eventSource.onerror = (error) => {
+				console.error('EventSource error:', error);
+				this.disconnectFromSession(sessionId);
+				reject(error);
+			};
+
+			this.eventSources.set(sessionId, eventSource);
+		});
 	}
 
 	disconnectFromSession(sessionId: string): void {
