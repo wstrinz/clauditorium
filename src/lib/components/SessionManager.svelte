@@ -230,11 +230,11 @@
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
 				</svg>
 			</button>
-			<h1 class="text-xl font-bold hidden lg:block">Claudeitorium</h1>
+			<h1 class="text-xl font-bold hidden lg:block">Clauditorium</h1>
 		</div>
 		
 		<div class="navbar-center lg:hidden">
-			<h1 class="text-xl font-bold">Claudeitorium</h1>
+			<h1 class="text-xl font-bold">Clauditorium</h1>
 		</div>
 
 		<div class="navbar-end">
@@ -418,7 +418,7 @@
 			{:else}
 				<div class="flex-1 flex items-center justify-center p-4">
 					<div class="text-center max-w-2xl">
-						<h2 class="text-2xl font-bold mb-4">Welcome to Claudeitorium</h2>
+						<h2 class="text-2xl font-bold mb-4">Welcome to Clauditorium</h2>
 						<p class="text-base-content/60 mb-6">
 							Select a session from the sidebar or create a new one to get started.
 						</p>

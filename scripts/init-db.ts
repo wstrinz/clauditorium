@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 
-const db = new Database('./claudeitorium.db');
+const db = new Database('./clauditorium.db');
 
 // Create sessions table
 db.exec(`

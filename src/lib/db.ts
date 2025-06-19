@@ -23,12 +23,12 @@ export interface SessionOutput {
 	content: string;
 }
 
-export class ClaudeitoriumDB extends Dexie {
+export class ClauditoriumDB extends Dexie {
 	sessions!: Table<Session>;
 	sessionOutputs!: Table<SessionOutput>;
 
 	constructor() {
-		super('claudeitorium');
+		super('clauditorium');
 		
 		this.version(1).stores({
 			sessions: '++id, sessionId, status, createdAt, lastActiveAt',
@@ -81,4 +81,4 @@ export class ClaudeitoriumDB extends Dexie {
 	}
 }
 
-export const db = new ClaudeitoriumDB();
+export const db = new ClauditoriumDB();

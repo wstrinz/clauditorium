@@ -12,8 +12,8 @@ export interface RecentDirectory {
 	useCount: number;
 }
 
-const RECENT_CONFIGS_KEY = 'claudeitorium_recent_configs';
-const RECENT_DIRS_KEY = 'claudeitorium_recent_dirs';
+const RECENT_CONFIGS_KEY = 'clauditorium_recent_configs';
+const RECENT_DIRS_KEY = 'clauditorium_recent_dirs';
 const MAX_RECENT_ITEMS = 10;
 
 export class RecentConfigsService {
