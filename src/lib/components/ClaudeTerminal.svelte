@@ -15,6 +15,8 @@
 
 	let terminalRef: Terminal;
 	let inputBuffer = '';
+	let autoScroll = $state(true);
+	let scrollDisposable: any;
 
 	// Special key mappings for Claude Code
 	const specialKeys = {
@@ -44,11 +46,14 @@
 
 	// Public methods to control the terminal
 	export function write(data: string) {
-		terminalRef?.write(data);
+		writeWithAutoScroll(data);
 	}
 
 	export function writeln(data: string) {
 		terminalRef?.writeln(data);
+		if (autoScroll) {
+			setTimeout(() => terminalRef?.scrollToBottom(), 0);
+		}
 	}
 
 	export function clear() {
@@ -57,6 +62,43 @@
 
 	export function focus() {
 		terminalRef?.focus();
+	}
+
+	export function scrollToBottom() {
+		terminalRef?.scrollToBottom();
+	}
+
+	// Setup scroll detection when terminal is ready
+	$effect(() => {
+		if (terminalRef && terminalRef.onScroll) {
+			scrollDisposable = terminalRef.onScroll(() => {
+				// Check if user manually scrolled away from bottom
+				if (autoScroll && !terminalRef.isScrolledToBottom()) {
+					autoScroll = false;
+				}
+				// Re-enable auto-scroll if user scrolled back to bottom
+				else if (!autoScroll && terminalRef.isScrolledToBottom()) {
+					autoScroll = true;
+				}
+			});
+		}
+		return () => {
+			if (scrollDisposable) {
+				scrollDisposable.dispose();
+			}
+		};
+	});
+
+	// Auto-scroll on new output
+	let lastWriteTime = $state(0);
+	
+	function writeWithAutoScroll(data: string) {
+		terminalRef?.write(data);
+		lastWriteTime = Date.now();
+		if (autoScroll) {
+			// Small delay to ensure content is rendered
+			setTimeout(() => terminalRef?.scrollToBottom(), 0);
+		}
 	}
 
 	// Keyboard shortcut buttons
@@ -145,6 +187,29 @@
 			>
 				Tab
 			</button>
+		</div>
+
+		<!-- Scroll controls -->
+		<div class="flex gap-1 flex-shrink-0 items-center">
+			<button 
+				class="btn btn-sm sm:btn-md btn-neutral"
+				onclick={() => {
+					scrollToBottom();
+					autoScroll = true;
+				}}
+				title="Scroll to bottom"
+			>
+				↓
+			</button>
+			<label class="label cursor-pointer flex gap-1 text-xs">
+				<input 
+					type="checkbox" 
+					class="checkbox checkbox-xs" 
+					bind:checked={autoScroll}
+					title="Auto-scroll to bottom"
+				/>
+				<span class="hidden sm:inline">Auto</span>
+			</label>
 		</div>
 
 		<!-- Session info - hidden on very small screens -->

@@ -119,6 +119,23 @@
 			terminal.focus();
 		}
 	}
+
+	export function scrollToBottom() {
+		if (terminal) {
+			terminal.scrollToBottom();
+		}
+	}
+
+	export function isScrolledToBottom(): boolean {
+		if (!terminal) return true;
+		return terminal.buffer.active.viewportY === terminal.buffer.active.length - terminal.rows;
+	}
+
+	export function onScroll(callback: () => void) {
+		if (terminal) {
+			return terminal.onScroll(callback);
+		}
+	}
 </script>
 
 <div bind:this={container} class="terminal-container w-full h-full"></div>
