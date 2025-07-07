@@ -11,7 +11,12 @@ export const sessions = sqliteTable('sessions', {
 	hasBackendProcess: integer('has_backend_process', { mode: 'boolean' }).default(false),
 	useContinueFlag: integer('use_continue_flag', { mode: 'boolean' }).default(false),
 	canReinitialize: integer('can_reinitialize', { mode: 'boolean' }).default(false),
-	metadata: text('metadata', { mode: 'json' }).$type<Record<string, any>>()
+	metadata: text('metadata', { mode: 'json' }).$type<Record<string, any>>(),
+	// Claude CLI session integration fields
+	claudeSessionId: text('claude_session_id').unique(), // The actual Claude session ID from ~/.claude
+	claudeSessionPath: text('claude_session_path'), // Path to the .jsonl file
+	isClaudeSession: integer('is_claude_session', { mode: 'boolean' }).default(false), // Whether this is a discovered Claude session
+	discoveredAt: integer('discovered_at', { mode: 'timestamp' }) // When this session was discovered
 });
 
 export const sessionHistory = sqliteTable('session_history', {

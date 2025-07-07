@@ -3,18 +3,19 @@
 	import { sessionAPI, type SessionInfo } from '$lib/services/session-api';
 	import { recentConfigsService, type RecentConfig } from '$lib/services/recent-configs';
 	import ClaudeTerminal from './ClaudeTerminal.svelte';
-	import DirectoryPicker from './DirectoryPicker.svelte';
+	import DirectoryPickerNew from './DirectoryPickerNew.svelte';
+	import SessionDiscoveryModal from './SessionDiscoveryModal.svelte';
 
 	let sessions = $state<SessionInfo[]>([]);
 	let activeSessionId = $state<string | null>(null);
 	let isCreatingSession = $state(false);
 	let newSessionName = $state('');
 	let newSessionDirectory = $state('');
-	let useContinueFlag = $state(false);
 	let isMobileMenuOpen = $state(false);
 	let activeTerminal: ClaudeTerminal | null = null;
 	let recentConfigs = $state<RecentConfig[]>([]);
 	let showRecentConfigs = $state(false);
+	let discoveryModal: SessionDiscoveryModal;
 
 	const activeSession = $derived(() => 
 		sessions.find(s => s.sessionId === activeSessionId)
@@ -59,14 +60,12 @@
 	function useRecentConfig(config: RecentConfig) {
 		newSessionName = config.name;
 		newSessionDirectory = config.workingDirectory;
-		useContinueFlag = config.useContinueFlag;
 		showRecentConfigs = false;
 	}
 
 	async function createSessionFromRecent(config: RecentConfig) {
 		newSessionName = config.name;
 		newSessionDirectory = config.workingDirectory;
-		useContinueFlag = config.useContinueFlag;
 		await createSession();
 	}
 
@@ -77,15 +76,14 @@
 			// Create session on backend
 			const sessionInfo = await sessionAPI.createSession(
 				newSessionName.trim(),
-				newSessionDirectory || undefined, 
-				useContinueFlag
+				newSessionDirectory || undefined
 			);
 			
 			// Save to recent configs
 			recentConfigsService.addRecentConfig({
 				name: sessionInfo.name,
 				workingDirectory: sessionInfo.workingDirectory,
-				useContinueFlag: sessionInfo.useContinueFlag
+				useContinueFlag: false // No longer used
 			});
 			
 			// Save working directory
@@ -101,7 +99,6 @@
 			
 			newSessionName = '';
 			newSessionDirectory = '';
-			useContinueFlag = false;
 			isCreatingSession = false;
 			isMobileMenuOpen = false;
 
@@ -132,8 +129,8 @@
 
 	async function terminateSession(sessionId: string) {
 		try {
-			// Terminating is same as deleting since we're using server storage
-			await sessionAPI.deleteSession(sessionId);
+			// Terminate the session (stop process but keep in database)
+			await sessionAPI.terminateSession(sessionId);
 			if (activeSessionId === sessionId) {
 				activeSessionId = null;
 			}
@@ -162,11 +159,10 @@
 			const session = sessions.find(s => s.sessionId === sessionId);
 			if (!session) return;
 
-			// Create new session on backend with same directory and continue flag
+			// Create new session on backend with same directory
 			const sessionInfo = await sessionAPI.createSession(
 				session.name,
-				session.workingDirectory, 
-				session.useContinueFlag || false
+				session.workingDirectory
 			);
 
 			await loadSessions();
@@ -176,6 +172,31 @@
 			connectToSession(sessionInfo.sessionId);
 		} catch (error) {
 			console.error('Failed to reinitialize session:', error);
+		}
+	}
+
+	async function restartSession(sessionId: string) {
+		try {
+			// Restart the existing session with --continue flag
+			await sessionAPI.restartSession(sessionId);
+			
+			// Reload sessions to get updated status
+			await loadSessions();
+			
+			// Reconnect to the restarted session
+			connectToSession(sessionId);
+			
+			// Clear terminal and show restart message
+			if (activeTerminal && activeSessionId === sessionId) {
+				activeTerminal.clear();
+				activeTerminal.writeln('🔄 Session restarted with --continue flag');
+			}
+		} catch (error) {
+			console.error('Failed to restart session:', error);
+			// Show error in terminal if active
+			if (activeTerminal && activeSessionId === sessionId) {
+				activeTerminal.writeln(`❌ Failed to restart session: ${error}`);
+			}
 		}
 	}
 
@@ -216,6 +237,41 @@
 			console.error('Failed to resize session:', error);
 		}
 	}
+
+	function openDiscovery() {
+		discoveryModal.open();
+	}
+
+	function handleSessionsImported(event: CustomEvent) {
+		const { imported, errors } = event.detail;
+		console.log(`Imported ${imported} sessions`, errors.length > 0 ? 'with errors:' : '', errors);
+		loadSessions(); // Refresh the sessions list
+	}
+
+	async function resumeClaudeSession(session: SessionInfo) {
+		if (!session.claudeSessionId) return;
+		
+		try {
+			// Create a new session that resumes the Claude session
+			const sessionInfo = await sessionAPI.createSession(
+				session.name,
+				session.workingDirectory,
+				session.claudeSessionId
+			);
+			
+			// Set active session
+			activeSessionId = sessionInfo.sessionId;
+			
+			await loadSessions();
+			
+			// Connect to session output
+			connectToSession(sessionInfo.sessionId);
+			
+			isMobileMenuOpen = false;
+		} catch (error) {
+			console.error('Failed to resume Claude session:', error);
+		}
+	}
 </script>
 
 <div class="h-screen flex flex-col bg-base-100">
@@ -238,6 +294,15 @@
 		</div>
 
 		<div class="navbar-end">
+			<button 
+				class="btn btn-ghost btn-sm mr-2"
+				onclick={openDiscovery}
+			>
+				<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+				</svg>
+				<span class="hidden sm:inline">Discover</span>
+			</button>
 			<button 
 				class="btn btn-primary btn-sm"
 				onclick={() => { isCreatingSession = true; isMobileMenuOpen = true; }}
@@ -315,22 +380,13 @@
 								bind:value={newSessionName}
 								onkeydown={(e) => e.key === 'Enter' && createSession()}
 							/>
-							<DirectoryPicker 
+							<DirectoryPickerNew 
 								bind:selectedDirectory={newSessionDirectory}
+								placeholder="Select working directory (optional)"
 							/>
 						{/if}
 						
 						{#if !showRecentConfigs}
-							<div class="form-control mt-2">
-								<label class="label cursor-pointer justify-start gap-2">
-									<input 
-										type="checkbox" 
-										class="checkbox checkbox-sm" 
-										bind:checked={useContinueFlag}
-									/>
-									<span class="label-text text-sm">Use --continue (resume previous session)</span>
-								</label>
-							</div>
 							<div class="flex gap-2 mt-2">
 								<button 
 									class="btn btn-primary btn-sm flex-1"
@@ -340,7 +396,7 @@
 								</button>
 								<button 
 									class="btn btn-ghost btn-sm flex-1"
-									onclick={() => { isCreatingSession = false; newSessionName = ''; newSessionDirectory = ''; useContinueFlag = false; showRecentConfigs = false; }}
+									onclick={() => { isCreatingSession = false; newSessionName = ''; newSessionDirectory = ''; showRecentConfigs = false; }}
 								>
 									Cancel
 								</button>
@@ -361,10 +417,20 @@
 						>
 							<div class="flex items-center justify-between">
 								<div class="flex-1">
-									<h3 class="font-semibold">{session.name}</h3>
+									<div class="flex items-center gap-2">
+										<h3 class="font-semibold">{session.name}</h3>
+										{#if session.isClaudeSession}
+											<span class="badge badge-secondary badge-xs">Claude</span>
+										{/if}
+									</div>
 									<p class="text-sm text-base-content/60">
 										{session.status} • {new Date(session.lastActiveAt).toLocaleString()}
 									</p>
+									{#if session.isClaudeSession && session.claudeSessionId}
+										<p class="text-xs text-base-content/40 mt-1">
+											Session ID: {session.claudeSessionId.substring(0, 8)}...
+										</p>
+									{/if}
 								</div>
 								<div class="dropdown dropdown-end">
 									<button 
@@ -374,11 +440,25 @@
 										⋮
 									</button>
 									<ul class="dropdown-content z-10 menu p-2 shadow bg-base-100 rounded-box w-52">
+										{#if session.isClaudeSession && session.claudeSessionId && session.status === 'inactive'}
+											<li><button onclick={() => resumeClaudeSession(session)}>
+												<span class="flex items-center gap-2">
+													▶️ Resume Claude Session
+												</span>
+											</button></li>
+										{/if}
 										{#if session.status === 'active'}
 											<li><button onclick={() => terminateSession(session.sessionId)}>Terminate</button></li>
 										{/if}
+										{#if session.status === 'crashed' || session.status === 'terminated'}
+											<li><button onclick={() => restartSession(session.sessionId)}>
+												<span class="flex items-center gap-2">
+													🔄 Resume Session
+												</span>
+											</button></li>
+										{/if}
 										{#if session.status === 'crashed' || (session.status === 'terminated' && session.canReinitialize)}
-											<li><button onclick={() => reinitializeSession(session.sessionId)}>Reinitialize</button></li>
+											<li><button onclick={() => reinitializeSession(session.sessionId)}>New Session (same dir)</button></li>
 										{/if}
 										<li><button onclick={() => deleteSession(session.sessionId)}>Delete</button></li>
 									</ul>
@@ -443,10 +523,7 @@
 											<div class="flex-1">
 												<div class="font-medium">{config.name}</div>
 												<div class="text-xs text-base-content/60">
-													{config.workingDirectory} 
-													{#if config.useContinueFlag}
-														• --continue
-													{/if}
+													{config.workingDirectory}
 												</div>
 											</div>
 											<span class="text-xs text-base-content/60">
@@ -462,4 +539,10 @@
 			{/if}
 		</div>
 	</div>
+
+	<!-- Discovery Modal -->
+	<SessionDiscoveryModal 
+		bind:this={discoveryModal}
+		on:sessions-imported={handleSessionsImported}
+	/>
 </div>

@@ -1,5 +1,6 @@
 import { db } from './index';
 import { sql } from 'drizzle-orm';
+import { sessionHealthChecker } from '../services/session-health-checker.js';
 
 // Initialize database tables
 export function initDatabase() {
@@ -38,6 +39,12 @@ export function initDatabase() {
 		db.run(sql`CREATE INDEX IF NOT EXISTS idx_session_history_timestamp ON session_history(timestamp)`);
 
 		console.log('Database tables initialized successfully');
+
+		// Mark all active sessions as crashed on startup since they won't survive server restarts
+		sessionHealthChecker.markAllSessionsAsCrashed().then(() => {
+			// Start the health checker
+			sessionHealthChecker.start();
+		});
 	} catch (error) {
 		console.error('Failed to initialize database:', error);
 		throw error;

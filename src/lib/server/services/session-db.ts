@@ -13,6 +13,10 @@ export interface SessionData {
 	useContinueFlag: boolean;
 	canReinitialize: boolean;
 	metadata?: Record<string, any>;
+	claudeSessionId?: string;
+	claudeSessionPath?: string;
+	isClaudeSession?: boolean;
+	discoveredAt?: Date;
 }
 
 export interface SessionHistoryData {
@@ -34,7 +38,11 @@ export async function createSession(data: Omit<SessionData, 'createdAt' | 'lastA
 		hasBackendProcess: data.hasBackendProcess,
 		useContinueFlag: data.useContinueFlag,
 		canReinitialize: data.canReinitialize,
-		metadata: data.metadata
+		metadata: data.metadata,
+		claudeSessionId: data.claudeSessionId,
+		claudeSessionPath: data.claudeSessionPath,
+		isClaudeSession: data.isClaudeSession ?? false,
+		discoveredAt: data.discoveredAt
 	}).returning();
 
 	return {
@@ -44,6 +52,10 @@ export async function createSession(data: Omit<SessionData, 'createdAt' | 'lastA
 		useContinueFlag: inserted.useContinueFlag ?? false,
 		canReinitialize: inserted.canReinitialize ?? false,
 		metadata: inserted.metadata ?? undefined,
+		claudeSessionId: inserted.claudeSessionId ?? undefined,
+		claudeSessionPath: inserted.claudeSessionPath ?? undefined,
+		isClaudeSession: inserted.isClaudeSession ?? false,
+		discoveredAt: inserted.discoveredAt ?? undefined,
 		createdAt: inserted.createdAt,
 		lastActiveAt: inserted.lastActiveAt
 	};
@@ -64,6 +76,34 @@ export async function getSession(sessionId: string): Promise<SessionData | null>
 		useContinueFlag: session.useContinueFlag ?? false,
 		canReinitialize: session.canReinitialize ?? false,
 		metadata: session.metadata ?? undefined,
+		claudeSessionId: session.claudeSessionId ?? undefined,
+		claudeSessionPath: session.claudeSessionPath ?? undefined,
+		isClaudeSession: session.isClaudeSession ?? false,
+		discoveredAt: session.discoveredAt ?? undefined,
+		createdAt: session.createdAt,
+		lastActiveAt: session.lastActiveAt
+	};
+}
+
+export async function getSessionByClaudeId(claudeSessionId: string): Promise<SessionData | null> {
+	const result = await db.select().from(sessions).where(eq(sessions.claudeSessionId, claudeSessionId)).limit(1);
+	
+	if (result.length === 0) {
+		return null;
+	}
+
+	const session = result[0];
+	return {
+		...session,
+		status: session.status as 'active' | 'inactive' | 'terminated' | 'crashed',
+		hasBackendProcess: session.hasBackendProcess ?? false,
+		useContinueFlag: session.useContinueFlag ?? false,
+		canReinitialize: session.canReinitialize ?? false,
+		metadata: session.metadata ?? undefined,
+		claudeSessionId: session.claudeSessionId ?? undefined,
+		claudeSessionPath: session.claudeSessionPath ?? undefined,
+		isClaudeSession: session.isClaudeSession ?? false,
+		discoveredAt: session.discoveredAt ?? undefined,
 		createdAt: session.createdAt,
 		lastActiveAt: session.lastActiveAt
 	};
@@ -79,6 +119,10 @@ export async function getAllSessions(): Promise<SessionData[]> {
 		useContinueFlag: session.useContinueFlag ?? false,
 		canReinitialize: session.canReinitialize ?? false,
 		metadata: session.metadata ?? undefined,
+		claudeSessionId: session.claudeSessionId ?? undefined,
+		claudeSessionPath: session.claudeSessionPath ?? undefined,
+		isClaudeSession: session.isClaudeSession ?? false,
+		discoveredAt: session.discoveredAt ?? undefined,
 		createdAt: session.createdAt,
 		lastActiveAt: session.lastActiveAt
 	}));

@@ -9,18 +9,27 @@ export interface SessionInfo {
 	useContinueFlag: boolean;
 	canReinitialize: boolean;
 	metadata?: Record<string, any>;
+	claudeSessionId?: string;
+	claudeSessionPath?: string;
+	isClaudeSession?: boolean;
+	discoveredAt?: Date;
 }
 
 export class SessionAPI {
 	private eventSources = new Map<string, EventSource>();
 
-	async createSession(name: string, workingDirectory?: string, useContinueFlag?: boolean): Promise<SessionInfo> {
+	async createSession(name: string, workingDirectory?: string, claudeSessionId?: string): Promise<SessionInfo> {
 		const response = await fetch('/api/sessions', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify({ name, workingDirectory, useContinueFlag })
+			body: JSON.stringify({ 
+				name, 
+				workingDirectory, 
+				claudeSessionId,
+				isClaudeSession: !!claudeSessionId
+			})
 		});
 
 		if (!response.ok) {
@@ -39,6 +48,19 @@ export class SessionAPI {
 
 		const data = await response.json();
 		return data.sessions;
+	}
+
+	async terminateSession(sessionId: string): Promise<void> {
+		const response = await fetch(`/api/sessions/${sessionId}/terminate`, {
+			method: 'POST'
+		});
+
+		if (!response.ok) {
+			throw new Error('Failed to terminate session');
+		}
+
+		// Clean up event source if exists
+		this.disconnectFromSession(sessionId);
 	}
 
 	async deleteSession(sessionId: string): Promise<void> {
@@ -80,6 +102,19 @@ export class SessionAPI {
 		if (!response.ok) {
 			throw new Error('Failed to resize session');
 		}
+	}
+
+	async restartSession(sessionId: string): Promise<SessionInfo> {
+		const response = await fetch(`/api/sessions/${sessionId}/restart`, {
+			method: 'POST'
+		});
+
+		if (!response.ok) {
+			const error = await response.json();
+			throw new Error(error.error || 'Failed to restart session');
+		}
+
+		return await response.json();
 	}
 
 	connectToSession(sessionId: string, onOutput: (data: string) => void): Promise<void> {

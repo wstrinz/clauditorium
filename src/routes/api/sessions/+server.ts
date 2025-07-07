@@ -20,14 +20,24 @@ export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const { 
 			workingDirectory = process.env.HOME || '~', 
-			useContinueFlag = false,
-			name = 'New Session'
+			name = 'New Session',
+			claudeSessionId = null, // For resuming existing Claude sessions
+			isClaudeSession = false
 		} = await request.json();
 		
 		const sessionId = `session-${Date.now()}-${randomBytes(4).toString('hex')}`;
 		
 		// Build claude command arguments
-		const claudeArgs = useContinueFlag ? ['--continue'] : [];
+		let claudeArgs: string[] = [];
+		
+		if (claudeSessionId) {
+			// Resume existing Claude session using --resume flag
+			claudeArgs = ['--resume', claudeSessionId];
+		} else {
+			// For new sessions, start fresh without any flags
+			// Claude will create a new session automatically
+			claudeArgs = [];
+		}
 		
 		// Spawn claude code process with PTY
 		const claudeProcess = ptySpawn('claude', claudeArgs, {
@@ -45,17 +55,61 @@ export const POST: RequestHandler = async ({ request }) => {
 		let createdAt = new Date();
 		if (dbInitialized) {
 			try {
-				const dbSession = await sessionDb.createSession({
-					sessionId,
-					name,
-					status: 'active',
-					workingDirectory,
-					hasBackendProcess: true,
-					useContinueFlag,
-					canReinitialize: false,
-					metadata: {}
-				});
-				createdAt = dbSession.createdAt;
+				const effectiveClaudeSessionId = claudeSessionId || sessionId;
+				
+				if (claudeSessionId) {
+					// Check if this Claude session already exists (from discovery)
+					const existingSession = await sessionDb.getSessionByClaudeId(claudeSessionId);
+					if (existingSession) {
+						// Update existing discovered session to mark as active
+						await sessionDb.updateSession(existingSession.sessionId, {
+							status: 'active',
+							hasBackendProcess: true,
+							lastActiveAt: new Date(),
+							name: name || existingSession.name
+						});
+						// Use the existing session's data
+						createdAt = existingSession.createdAt;
+					} else {
+						// Create new Claude session record for discovered session
+						const dbSession = await sessionDb.createSession({
+							sessionId,
+							name,
+							status: 'active',
+							workingDirectory,
+							hasBackendProcess: true,
+							useContinueFlag: false,
+							canReinitialize: true,
+							metadata: {
+								source: 'discovered'
+							},
+							claudeSessionId,
+							isClaudeSession: true,
+							claudeSessionPath: undefined,
+							discoveredAt: new Date()
+						});
+						createdAt = dbSession.createdAt;
+					}
+				} else {
+					// New session creation - Claude will generate its own session ID
+					const dbSession = await sessionDb.createSession({
+						sessionId,
+						name,
+						status: 'active',
+						workingDirectory,
+						hasBackendProcess: true,
+						useContinueFlag: false,
+						canReinitialize: true,
+						metadata: {
+							source: 'created'
+						},
+						claudeSessionId: undefined, // Claude will generate its own session ID
+						isClaudeSession: false, // New sessions start as regular sessions
+						claudeSessionPath: undefined,
+						discoveredAt: undefined
+					});
+					createdAt = dbSession.createdAt;
+				}
 			} catch (dbError) {
 				console.error('Failed to save session to database:', dbError);
 				// Continue without database
@@ -112,8 +166,10 @@ export const POST: RequestHandler = async ({ request }) => {
 			workingDirectory,
 			createdAt: createdAt,
 			hasBackendProcess: true,
-			useContinueFlag,
-			canReinitialize: false
+			useContinueFlag: false,
+			canReinitialize: true,
+			claudeSessionId: claudeSessionId || undefined,
+			isClaudeSession: !!claudeSessionId
 		});
 	} catch (error) {
 		console.error('Failed to create session:', error);

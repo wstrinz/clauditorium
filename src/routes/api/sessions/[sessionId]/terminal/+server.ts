@@ -50,13 +50,36 @@ export const GET: RequestHandler = async ({ params }) => {
 	// Create a readable stream for SSE
 	const stream = new ReadableStream({
 		start(controller) {
+			let isControllerClosed = false;
+			
 			// Send initial connection message
-			controller.enqueue(`data: {"type":"connected","sessionId":"${sessionId}"}\n\n`);
+			try {
+				controller.enqueue(`data: {"type":"connected","sessionId":"${sessionId}"}\n\n`);
+			} catch (error) {
+				console.warn('Failed to send initial SSE message:', error);
+				isControllerClosed = true;
+			}
 
 			// Handler for output data
 			const outputHandler = (data: string) => {
-				const message = JSON.stringify({ type: 'output', data });
-				controller.enqueue(`data: ${message}\n\n`);
+				if (isControllerClosed) {
+					// Remove handler if controller is closed
+					removeOutputHandler(sessionId, outputHandler);
+					return;
+				}
+				
+				try {
+					const message = JSON.stringify({ type: 'output', data });
+					controller.enqueue(`data: ${message}\n\n`);
+				} catch (error) {
+					if (error instanceof TypeError && error.message.includes('Controller is already closed')) {
+						console.log('SSE controller closed for session:', sessionId);
+						isControllerClosed = true;
+						removeOutputHandler(sessionId, outputHandler);
+					} else {
+						console.error('Failed to send SSE message:', error);
+					}
+				}
 			};
 
 			// Add handler
@@ -64,6 +87,7 @@ export const GET: RequestHandler = async ({ params }) => {
 
 			// Clean up on close
 			return () => {
+				isControllerClosed = true;
 				removeOutputHandler(sessionId, outputHandler);
 			};
 		},
