@@ -177,7 +177,7 @@
 
 	async function restartSession(sessionId: string) {
 		try {
-			// Restart the existing session with --continue flag
+			// Restart the existing session
 			await sessionAPI.restartSession(sessionId);
 			
 			// Reload sessions to get updated status
@@ -186,10 +186,15 @@
 			// Reconnect to the restarted session
 			connectToSession(sessionId);
 			
-			// Clear terminal and show restart message
+			// Clear terminal and show appropriate restart message
 			if (activeTerminal && activeSessionId === sessionId) {
 				activeTerminal.clear();
-				activeTerminal.writeln('🔄 Session restarted with --continue flag');
+				const session = sessions.find(s => s.sessionId === sessionId);
+				if (session?.claudeSessionId) {
+					activeTerminal.writeln(`🔄 Session resumed (--resume ${session.claudeSessionId.substring(0, 8)}...)`);
+				} else {
+					activeTerminal.writeln('🔄 Session restarted with --continue flag');
+				}
 			}
 		} catch (error) {
 			console.error('Failed to restart session:', error);
@@ -242,10 +247,10 @@
 		discoveryModal.open();
 	}
 
-	function handleSessionsImported(event: CustomEvent) {
+	async function handleSessionsImported(event: CustomEvent) {
 		const { imported, errors } = event.detail;
 		console.log(`Imported ${imported} sessions`, errors.length > 0 ? 'with errors:' : '', errors);
-		loadSessions(); // Refresh the sessions list
+		await loadSessions(); // Refresh the sessions list
 	}
 
 	async function resumeClaudeSession(session: SessionInfo) {

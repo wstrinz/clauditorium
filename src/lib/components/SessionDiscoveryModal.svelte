@@ -15,10 +15,12 @@
 	let isLoading = $state(false);
 	let isImporting = $state(false);
 	let discoverableSessions = $state<DiscoverableSession[]>([]);
+	let filteredSessions = $state<DiscoverableSession[]>([]);
 	let selectedSessions = $state<Set<string>>(new Set());
 	let totalFound = $state(0);
 	let alreadyImported = $state(0);
 	let error = $state<string | null>(null);
+	let searchQuery = $state('');
 
 	export function open() {
 		isOpen = true;
@@ -29,6 +31,7 @@
 		isOpen = false;
 		selectedSessions.clear();
 		error = null;
+		searchQuery = '';
 	}
 
 	async function loadDiscoverableSessions() {
@@ -41,6 +44,7 @@
 			
 			if (result.success) {
 				discoverableSessions = result.sessions;
+				filteredSessions = result.sessions;
 				totalFound = result.totalFound;
 				alreadyImported = result.alreadyImported;
 			} else {
@@ -65,7 +69,7 @@
 	}
 
 	function selectAll() {
-		selectedSessions = new Set(discoverableSessions.map(s => s.claudeSessionId));
+		selectedSessions = new Set(filteredSessions.map(s => s.claudeSessionId));
 	}
 
 	function selectNone() {
@@ -93,15 +97,19 @@
 			const result = await response.json();
 			
 			if (result.success) {
+				// Dispatch event to parent to refresh sessions list
+				const event = new CustomEvent('sessions-imported', {
+					detail: { imported: result.imported, errors: result.errors }
+				});
+				dispatchEvent(event);
+				
 				// Refresh the discoverable sessions list
 				await loadDiscoverableSessions();
 				selectedSessions.clear();
 				selectedSessions = new Set();
 				
-				// Dispatch event to parent to refresh sessions list
-				dispatchEvent(new CustomEvent('sessions-imported', {
-					detail: { imported: result.imported, errors: result.errors }
-				}));
+				// Close the modal after successful import
+				close();
 			} else {
 				error = result.error || 'Failed to import sessions';
 			}
@@ -112,6 +120,25 @@
 			isImporting = false;
 		}
 	}
+
+	function filterSessions(query: string) {
+		if (!query.trim()) {
+			filteredSessions = discoverableSessions;
+			return;
+		}
+		
+		const lowerQuery = query.toLowerCase();
+		filteredSessions = discoverableSessions.filter(session => 
+			session.projectName.toLowerCase().includes(lowerQuery) ||
+			session.workingDirectory.toLowerCase().includes(lowerQuery) ||
+			session.claudeSessionId.toLowerCase().includes(lowerQuery)
+		);
+	}
+
+	// Update filtered sessions when search query changes
+	$effect(() => {
+		filterSessions(searchQuery);
+	});
 </script>
 
 {#if isOpen}
@@ -123,7 +150,7 @@
 					<div>
 						<h2 class="text-xl font-semibold">Discover Claude Sessions</h2>
 						<p class="text-sm text-base-content/60 mt-1">
-							Found {totalFound} total sessions • {alreadyImported} already imported • {discoverableSessions.length} available to import
+							Found {totalFound} total sessions • {alreadyImported} already imported • {filteredSessions.length} available to import
 						</p>
 					</div>
 					<button class="btn btn-ghost btn-sm" onclick={close}>
@@ -162,8 +189,19 @@
 						</div>
 					</div>
 				{:else}
-					<!-- Controls -->
+					<!-- Search and Controls -->
 					<div class="p-4 border-b border-base-300">
+						<!-- Search -->
+						<div class="mb-3">
+							<input
+								type="text"
+								placeholder="Search sessions by name, path, or ID..."
+								class="input input-bordered input-sm w-full"
+								bind:value={searchQuery}
+							/>
+						</div>
+						
+						<!-- Controls -->
 						<div class="flex items-center justify-between">
 							<div class="flex gap-2">
 								<button class="btn btn-outline btn-xs" onclick={selectAll}>
@@ -181,39 +219,49 @@
 
 					<!-- Sessions List -->
 					<div class="flex-1 overflow-y-auto">
-						{#each discoverableSessions as session (session.claudeSessionId)}
-							<div class="p-4 border-b border-base-300 hover:bg-base-50">
-								<label class="flex items-center gap-3 cursor-pointer">
-									<input 
-										type="checkbox" 
-										class="checkbox checkbox-sm"
-										checked={selectedSessions.has(session.claudeSessionId)}
-										onchange={() => toggleSession(session.claudeSessionId)}
-									/>
-									<div class="flex-1">
-										<div class="flex items-center justify-between">
-											<div>
-												<h4 class="font-semibold">{session.projectName}</h4>
-												<p class="text-sm text-base-content/60">{session.workingDirectory}</p>
-											</div>
-											<div class="text-right text-xs text-base-content/60">
-												<div>
-													{session.messageCount} messages
-													{#if session.version}
-														• v{session.version}
-													{/if}
-												</div>
-												<div>Created: {new Date(session.createdAt).toLocaleString()}</div>
-												<div>Last: {new Date(session.lastActiveAt).toLocaleString()}</div>
-											</div>
-										</div>
-										<div class="text-xs text-base-content/40 mt-1 font-mono">
-											ID: {session.claudeSessionId.substring(0, 8)}...
-										</div>
-									</div>
-								</label>
+						{#if filteredSessions.length === 0 && searchQuery.trim()}
+							<div class="flex-1 flex items-center justify-center p-8">
+								<div class="text-center">
+									<div class="text-2xl mb-2">🔍</div>
+									<h3 class="text-lg font-semibold">No sessions found</h3>
+									<p class="text-base-content/60">Try adjusting your search query</p>
+								</div>
 							</div>
-						{/each}
+						{:else}
+							{#each filteredSessions as session (session.claudeSessionId)}
+								<div class="p-4 border-b border-base-300 hover:bg-base-50">
+									<label class="flex items-center gap-3 cursor-pointer">
+										<input 
+											type="checkbox" 
+											class="checkbox checkbox-sm"
+											checked={selectedSessions.has(session.claudeSessionId)}
+											onchange={() => toggleSession(session.claudeSessionId)}
+										/>
+										<div class="flex-1">
+											<div class="flex items-center justify-between">
+												<div>
+													<h4 class="font-semibold">{session.projectName}</h4>
+													<p class="text-sm text-base-content/60">{session.workingDirectory}</p>
+												</div>
+												<div class="text-right text-xs text-base-content/60">
+													<div>
+														{session.messageCount} messages
+														{#if session.version}
+															• v{session.version}
+														{/if}
+													</div>
+													<div>Created: {new Date(session.createdAt).toLocaleString()}</div>
+													<div>Last: {new Date(session.lastActiveAt).toLocaleString()}</div>
+												</div>
+											</div>
+											<div class="text-xs text-base-content/40 mt-1 font-mono">
+												ID: {session.claudeSessionId.substring(0, 8)}...
+											</div>
+										</div>
+									</label>
+								</div>
+							{/each}
+						{/if}
 					</div>
 				{/if}
 			</div>
