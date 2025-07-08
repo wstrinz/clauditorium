@@ -5,6 +5,19 @@
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>Clauditorium</title>
+		<script>
+			// Initialize theme before page loads to prevent flash
+			(function() {
+				const theme = localStorage.getItem('theme') || 'dark';
+				const html = document.documentElement;
+				
+				if (theme === 'system') {
+					html.removeAttribute('data-theme');
+				} else {
+					html.setAttribute('data-theme', theme);
+				}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
