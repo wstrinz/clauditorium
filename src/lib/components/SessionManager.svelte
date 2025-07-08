@@ -16,6 +16,8 @@
 	let recentConfigs = $state<RecentConfig[]>([]);
 	let showRecentConfigs = $state(false);
 	let discoveryModal: SessionDiscoveryModal;
+	let renamingSessionId = $state<string | null>(null);
+	let newSessionNameForRename = $state('');
 
 	const activeSession = $derived(() => 
 		sessions.find(s => s.sessionId === activeSessionId)
@@ -277,6 +279,32 @@
 			console.error('Failed to resume Claude session:', error);
 		}
 	}
+
+	function startRenaming(sessionId: string) {
+		const session = sessions.find(s => s.sessionId === sessionId);
+		if (session) {
+			renamingSessionId = sessionId;
+			newSessionNameForRename = session.name;
+		}
+	}
+
+	async function saveRename() {
+		if (!renamingSessionId || !newSessionNameForRename.trim()) return;
+		
+		try {
+			await sessionAPI.renameSession(renamingSessionId, newSessionNameForRename.trim());
+			await loadSessions();
+			renamingSessionId = null;
+			newSessionNameForRename = '';
+		} catch (error) {
+			console.error('Failed to rename session:', error);
+		}
+	}
+
+	function cancelRename() {
+		renamingSessionId = null;
+		newSessionNameForRename = '';
+	}
 </script>
 
 <div class="h-screen flex flex-col bg-base-100">
@@ -432,12 +460,39 @@
 						>
 							<div class="flex items-center justify-between">
 								<div class="flex-1">
-									<div class="flex items-center gap-2">
-										<h3 class="font-semibold">{session.name}</h3>
-										{#if session.isClaudeSession}
-											<span class="badge badge-secondary badge-xs">Claude</span>
-										{/if}
-									</div>
+									{#if renamingSessionId === session.sessionId}
+										<div class="flex items-center gap-2 mb-2" onclick={(e) => e.stopPropagation()}>
+											<input
+												type="text"
+												class="input input-sm input-bordered flex-1"
+												bind:value={newSessionNameForRename}
+												onkeydown={(e) => {
+													if (e.key === 'Enter') saveRename();
+													if (e.key === 'Escape') cancelRename();
+												}}
+												autofocus
+											/>
+											<button 
+												class="btn btn-ghost btn-xs"
+												onclick={saveRename}
+											>
+												✓
+											</button>
+											<button 
+												class="btn btn-ghost btn-xs"
+												onclick={cancelRename}
+											>
+												✕
+											</button>
+										</div>
+									{:else}
+										<div class="flex items-center gap-2">
+											<h3 class="font-semibold">{session.name}</h3>
+											{#if session.isClaudeSession}
+												<span class="badge badge-secondary badge-xs">Claude</span>
+											{/if}
+										</div>
+									{/if}
 									<p class="text-sm text-base-content/60">
 										{session.status} • {new Date(session.lastActiveAt).toLocaleString()}
 									</p>
@@ -455,6 +510,11 @@
 										⋮
 									</button>
 									<ul class="dropdown-content z-10 menu p-2 shadow bg-base-100 rounded-box w-52">
+										<li><button onclick={() => startRenaming(session.sessionId)}>
+											<span class="flex items-center gap-2">
+												✏️ Rename
+											</span>
+										</button></li>
 										{#if session.isClaudeSession && session.claudeSessionId && session.status === 'inactive'}
 											<li><button onclick={() => resumeClaudeSession(session)}>
 												<span class="flex items-center gap-2">

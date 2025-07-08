@@ -117,6 +117,23 @@ export class SessionAPI {
 		return await response.json();
 	}
 
+	async renameSession(sessionId: string, newName: string): Promise<SessionInfo> {
+		const response = await fetch(`/api/sessions/${sessionId}`, {
+			method: 'PATCH',
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({ name: newName })
+		});
+
+		if (!response.ok) {
+			const error = await response.json();
+			throw new Error(error.error || 'Failed to rename session');
+		}
+
+		return await response.json();
+	}
+
 	connectToSession(sessionId: string, onOutput: (data: string) => void): Promise<void> {
 		return new Promise((resolve, reject) => {
 			// Close existing connection if any

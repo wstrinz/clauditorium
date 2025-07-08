@@ -25,7 +25,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			isClaudeSession = false
 		} = await request.json();
 		
-		const sessionId = `session-${Date.now()}-${randomBytes(4).toString('hex')}`;
+		let sessionId = `session-${Date.now()}-${randomBytes(4).toString('hex')}`;
 		
 		// Build claude command arguments
 		let claudeArgs: string[] = [];
@@ -68,8 +68,10 @@ export const POST: RequestHandler = async ({ request }) => {
 							lastActiveAt: new Date(),
 							name: name || existingSession.name
 						});
-						// Use the existing session's data
+						// Use the existing session's data and sessionId
 						createdAt = existingSession.createdAt;
+						// Override the generated sessionId with the existing one
+						sessionId = existingSession.sessionId;
 					} else {
 						// Create new Claude session record for discovered session
 						const dbSession = await sessionDb.createSession({

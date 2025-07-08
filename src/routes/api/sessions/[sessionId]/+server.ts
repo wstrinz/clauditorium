@@ -49,3 +49,30 @@ export const GET: RequestHandler = async ({ params }) => {
 		hasBackendProcess: !!memorySession || dbSession.hasBackendProcess
 	});
 };
+
+export const PATCH: RequestHandler = async ({ params, request }) => {
+	const { sessionId } = params;
+	
+	try {
+		const body = await request.json();
+		
+		// Get existing session
+		const existingSession = await sessionDb.getSession(sessionId);
+		if (!existingSession) {
+			return json({ error: 'Session not found' }, { status: 404 });
+		}
+		
+		// Update session with new name
+		if (body.name !== undefined) {
+			await sessionDb.updateSession(sessionId, { name: body.name });
+		}
+		
+		// Return updated session
+		const updatedSession = await sessionDb.getSession(sessionId);
+		return json(updatedSession);
+		
+	} catch (error) {
+		console.error('Failed to update session:', error);
+		return json({ error: 'Failed to update session' }, { status: 500 });
+	}
+};
