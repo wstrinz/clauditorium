@@ -35,6 +35,10 @@ export class ClaudeSessionDiscovery {
 	}
 
 	async discoverSessions(): Promise<ClaudeSession[]> {
+		return this.discoverAllSessions();
+	}
+
+	async discoverAllSessions(): Promise<ClaudeSession[]> {
 		try {
 			await stat(this.projectsDir);
 		} catch (error) {
@@ -53,7 +57,25 @@ export class ClaudeSessionDiscovery {
 			}
 		}
 
-		return sessions;
+		// Sort by lastActiveAt in descending order (most recent first)
+		return sessions.sort((a, b) => b.lastActiveAt.getTime() - a.lastActiveAt.getTime());
+	}
+
+	async discoverLatestSessionPerProject(): Promise<ClaudeSession[]> {
+		const allSessions = await this.discoverAllSessions();
+		
+		// Deduplicate by working directory - keep only the most recent session per project
+		const deduplicatedSessions: ClaudeSession[] = [];
+		const seenDirectories = new Set<string>();
+		
+		for (const session of allSessions) {
+			if (!seenDirectories.has(session.workingDirectory)) {
+				seenDirectories.add(session.workingDirectory);
+				deduplicatedSessions.push(session);
+			}
+		}
+		
+		return deduplicatedSessions;
 	}
 
 	private async discoverSessionsInProject(projectPath: string): Promise<ClaudeSession[]> {
@@ -84,26 +106,62 @@ export class ClaudeSessionDiscovery {
 			
 			if (lines.length === 0) return null;
 
-			// Parse first line to get session metadata
-			const firstLine = JSON.parse(lines[0]);
-			const sessionId = firstLine.sessionId;
-			const cwd = firstLine.cwd;
-			const createdAt = new Date(firstLine.timestamp);
-			
-			if (!sessionId || !cwd) return null;
+			// Find the first line with actual session data (skip summary lines)
+			let sessionMetadata = null;
+			let sessionId = null;
+			let cwd = null;
+			let createdAt = null;
+			let version = null;
 
-			// Parse last line to get last activity
-			const lastLine = lines.length > 1 ? JSON.parse(lines[lines.length - 1]) : firstLine;
-			const lastActiveAt = new Date(lastLine.timestamp);
+			for (const line of lines) {
+				try {
+					const parsedLine = JSON.parse(line);
+					if (parsedLine.sessionId && parsedLine.cwd && parsedLine.timestamp) {
+						sessionId = parsedLine.sessionId;
+						cwd = parsedLine.cwd;
+						createdAt = new Date(parsedLine.timestamp);
+						version = parsedLine.version;
+						sessionMetadata = parsedLine;
+						break;
+					}
+				} catch (e) {
+					// Skip malformed lines
+					continue;
+				}
+			}
 
-			// Count messages
-			const messageCount = lines.length;
+			if (!sessionId || !cwd || !createdAt) return null;
 
-			// Extract version if available
-			const version = firstLine.version;
+			// Find the most recent sessionId and timestamp (Claude sometimes changes session IDs mid-conversation)
+			let mostRecentSessionId = sessionId;
+			let lastActiveAt = createdAt;
+
+			for (let i = lines.length - 1; i >= 0; i--) {
+				try {
+					const parsedLine = JSON.parse(lines[i]);
+					if (parsedLine.sessionId && parsedLine.timestamp) {
+						mostRecentSessionId = parsedLine.sessionId;
+						lastActiveAt = new Date(parsedLine.timestamp);
+						break;
+					}
+				} catch (e) {
+					// Skip malformed lines
+					continue;
+				}
+			}
+
+			// Count actual message lines (not summary lines)
+			const messageCount = lines.filter(line => {
+				try {
+					const parsed = JSON.parse(line);
+					return parsed.sessionId && parsed.timestamp;
+				} catch (e) {
+					return false;
+				}
+			}).length;
 
 			return {
-				sessionId,
+				sessionId: mostRecentSessionId, // Use the most recent session ID
 				filePath,
 				workingDirectory: cwd,
 				createdAt,

@@ -203,6 +203,7 @@
 														• v{session.version}
 													{/if}
 												</div>
+												<div>Created: {new Date(session.createdAt).toLocaleString()}</div>
 												<div>Last: {new Date(session.lastActiveAt).toLocaleString()}</div>
 											</div>
 										</div>
