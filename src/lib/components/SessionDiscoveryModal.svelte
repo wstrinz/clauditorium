@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { refreshSessions } from '$lib/stores/session-store.svelte';
 
 	interface DiscoverableSession {
 		claudeSessionId: string;
@@ -97,11 +98,10 @@
 			const result = await response.json();
 			
 			if (result.success) {
-				// Dispatch event to parent to refresh sessions list
-				const event = new CustomEvent('sessions-imported', {
-					detail: { imported: result.imported, errors: result.errors }
-				});
-				dispatchEvent(event);
+				console.log('Import successful, refreshing sessions...');
+				// Refresh the shared sessions state
+				await refreshSessions();
+				console.log('Sessions refreshed, closing modal...');
 				
 				// Refresh the discoverable sessions list
 				await loadDiscoverableSessions();

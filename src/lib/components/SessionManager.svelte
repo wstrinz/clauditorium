@@ -5,9 +5,7 @@
 	import ClaudeTerminal from './ClaudeTerminal.svelte';
 	import DirectoryPickerNew from './DirectoryPickerNew.svelte';
 	import SessionDiscoveryModal from './SessionDiscoveryModal.svelte';
-
-	let sessions = $state<SessionInfo[]>([]);
-	let activeSessionId = $state<string | null>(null);
+	import { sessionStore, getActiveSession, loadSessions, setActiveSession, refreshSessions } from '$lib/stores/session-store.svelte';
 	let isCreatingSession = $state(false);
 	let newSessionName = $state('');
 	let newSessionDirectory = $state('');
@@ -19,19 +17,15 @@
 	let renamingSessionId = $state<string | null>(null);
 	let newSessionNameForRename = $state('');
 
-	const activeSession = $derived(() => 
-		sessions.find(s => s.sessionId === activeSessionId)
-	);
-
 	onMount(async () => {
 		await loadSessions();
 		loadRecentConfigs();
 		
 		// Connect to active session if one exists and has backend process
-		if (activeSessionId) {
-			const session = sessions.find(s => s.sessionId === activeSessionId);
+		if (sessionStore.activeSessionId) {
+			const session = sessionStore.sessions.find(s => s.sessionId === sessionStore.activeSessionId);
 			if (session?.hasBackendProcess) {
-				connectToSession(activeSessionId);
+				connectToSession(sessionStore.activeSessionId);
 			}
 		}
 	});
@@ -41,19 +35,6 @@
 		sessionAPI.disconnectAll();
 	});
 
-	async function loadSessions() {
-		try {
-			sessions = await sessionAPI.getSessions();
-			// Auto-select first active session
-			const activeSessions = sessions.filter(s => s.status === 'active');
-			if (activeSessions.length > 0 && !activeSessionId) {
-				activeSessionId = activeSessions[0].sessionId;
-			}
-		} catch (error) {
-			console.error('Failed to load sessions:', error);
-			sessions = [];
-		}
-	}
 
 	function loadRecentConfigs() {
 		recentConfigs = recentConfigsService.getMostUsedConfigs(5);
@@ -94,7 +75,7 @@
 			}
 			
 			// Set active session before reloading to ensure it's selected
-			activeSessionId = sessionInfo.sessionId;
+			setActiveSession(sessionInfo.sessionId);
 			
 			await loadSessions();
 			loadRecentConfigs();
@@ -115,15 +96,15 @@
 
 	async function switchSession(sessionId: string) {
 		// Disconnect from previous session
-		if (activeSessionId) {
-			sessionAPI.disconnectFromSession(activeSessionId);
+		if (sessionStore.activeSessionId) {
+			sessionAPI.disconnectFromSession(sessionStore.activeSessionId);
 		}
 
-		activeSessionId = sessionId;
+		setActiveSession(sessionId);
 		isMobileMenuOpen = false;
 
 		// Connect to new session (only if it has a backend process)
-		const session = sessions.find(s => s.sessionId === sessionId);
+		const session = sessionStore.sessions.find(s => s.sessionId === sessionId);
 		if (session?.hasBackendProcess) {
 			connectToSession(sessionId);
 		}
@@ -133,8 +114,8 @@
 		try {
 			// Terminate the session (stop process but keep in database)
 			await sessionAPI.terminateSession(sessionId);
-			if (activeSessionId === sessionId) {
-				activeSessionId = null;
+			if (sessionStore.activeSessionId === sessionId) {
+				setActiveSession(null);
 			}
 			await loadSessions();
 		} catch (error) {
@@ -146,8 +127,8 @@
 		if (confirm('Delete this session? This cannot be undone.')) {
 			try {
 				await sessionAPI.deleteSession(sessionId);
-				if (activeSessionId === sessionId) {
-					activeSessionId = null;
+				if (sessionStore.activeSessionId === sessionId) {
+					setActiveSession(null);
 				}
 				await loadSessions();
 			} catch (error) {
@@ -158,7 +139,7 @@
 
 	async function reinitializeSession(sessionId: string) {
 		try {
-			const session = sessions.find(s => s.sessionId === sessionId);
+			const session = sessionStore.sessions.find(s => s.sessionId === sessionId);
 			if (!session) return;
 
 			// Create new session on backend with same directory
@@ -170,7 +151,7 @@
 			await loadSessions();
 			
 			// Switch to the new session
-			activeSessionId = sessionInfo.sessionId;
+			setActiveSession(sessionInfo.sessionId);
 			connectToSession(sessionInfo.sessionId);
 		} catch (error) {
 			console.error('Failed to reinitialize session:', error);
@@ -189,9 +170,9 @@
 			connectToSession(sessionId);
 			
 			// Clear terminal and show appropriate restart message
-			if (activeTerminal && activeSessionId === sessionId) {
+			if (activeTerminal && sessionStore.activeSessionId === sessionId) {
 				activeTerminal.clear();
-				const session = sessions.find(s => s.sessionId === sessionId);
+				const session = sessionStore.sessions.find(s => s.sessionId === sessionId);
 				if (session?.claudeSessionId) {
 					activeTerminal.writeln(`🔄 Session resumed (--resume ${session.claudeSessionId.substring(0, 8)}...)`);
 				} else {
@@ -201,7 +182,7 @@
 		} catch (error) {
 			console.error('Failed to restart session:', error);
 			// Show error in terminal if active
-			if (activeTerminal && activeSessionId === sessionId) {
+			if (activeTerminal && sessionStore.activeSessionId === sessionId) {
 				activeTerminal.writeln(`❌ Failed to restart session: ${error}`);
 			}
 		}
@@ -210,7 +191,7 @@
 	function connectToSession(sessionId: string) {
 		sessionAPI.connectToSession(sessionId, (data) => {
 			// Write output to terminal if it's the active session
-			if (activeTerminal && activeSessionId === sessionId) {
+			if (activeTerminal && sessionStore.activeSessionId === sessionId) {
 				activeTerminal.write(data);
 			}
 		}).catch(error => {
@@ -219,27 +200,27 @@
 	}
 
 	async function handleTerminalCommand(command: string) {
-		if (!activeSessionId) return;
+		if (!sessionStore.activeSessionId) return;
 		
-		const session = sessions.find(s => s.sessionId === activeSessionId);
+		const session = sessionStore.sessions.find(s => s.sessionId === sessionStore.activeSessionId);
 		if (!session?.hasBackendProcess) return;
 		
 		try {
 			// Send to backend
-			await sessionAPI.sendInput(activeSessionId, command);
+			await sessionAPI.sendInput(sessionStore.activeSessionId, command);
 		} catch (error) {
 			console.error('Failed to send command:', error);
 		}
 	}
 
 	async function handleTerminalResize(cols: number, rows: number) {
-		if (!activeSessionId) return;
+		if (!sessionStore.activeSessionId) return;
 		
-		const session = sessions.find(s => s.sessionId === activeSessionId);
+		const session = sessionStore.sessions.find(s => s.sessionId === sessionStore.activeSessionId);
 		if (!session?.hasBackendProcess) return;
 		
 		try {
-			await sessionAPI.resizeSession(activeSessionId, cols, rows);
+			await sessionAPI.resizeSession(sessionStore.activeSessionId, cols, rows);
 		} catch (error) {
 			console.error('Failed to resize session:', error);
 		}
@@ -247,12 +228,6 @@
 
 	function openDiscovery() {
 		discoveryModal.open();
-	}
-
-	async function handleSessionsImported(event: CustomEvent) {
-		const { imported, errors } = event.detail;
-		console.log(`Imported ${imported} sessions`, errors.length > 0 ? 'with errors:' : '', errors);
-		await loadSessions(); // Refresh the sessions list
 	}
 
 	async function resumeClaudeSession(session: SessionInfo) {
@@ -267,7 +242,7 @@
 			);
 			
 			// Set active session
-			activeSessionId = sessionInfo.sessionId;
+			setActiveSession(sessionInfo.sessionId);
 			
 			await loadSessions();
 			
@@ -281,7 +256,7 @@
 	}
 
 	function startRenaming(sessionId: string) {
-		const session = sessions.find(s => s.sessionId === sessionId);
+		const session = sessionStore.sessions.find(s => s.sessionId === sessionId);
 		if (session) {
 			renamingSessionId = sessionId;
 			newSessionNameForRename = session.name;
@@ -450,11 +425,11 @@
 
 				<!-- Sessions list -->
 				<div class="flex-1 overflow-y-auto">
-					{#each sessions as session (session.sessionId)}
+					{#each sessionStore.sessions as session (session.sessionId)}
 						<div
 							class={`
 								p-4 border-b border-base-300 cursor-pointer hover:bg-base-300
-								${session.sessionId === activeSessionId ? 'bg-base-300' : ''}
+								${session.sessionId === sessionStore.activeSessionId ? 'bg-base-300' : ''}
 							`}
 							onclick={() => switchSession(session.sessionId)}
 						>
@@ -542,7 +517,7 @@
 						</div>
 					{/each}
 					
-					{#if sessions.length === 0}
+					{#if sessionStore.sessions.length === 0}
 						<div class="p-4 text-center text-base-content/60">
 							No sessions yet. Create one to get started!
 						</div>
@@ -561,11 +536,11 @@
 
 		<!-- Main content -->
 		<div class="flex-1 flex flex-col">
-			{#if activeSession()}
-				{#key activeSession()!.sessionId}
+			{#if getActiveSession()}
+				{#key getActiveSession()!.sessionId}
 					<ClaudeTerminal 
 						bind:this={activeTerminal}
-						sessionId={activeSession()!.sessionId}
+						sessionId={getActiveSession()!.sessionId}
 						onCommand={handleTerminalCommand}
 						onResize={handleTerminalResize}
 					/>
@@ -618,6 +593,5 @@
 	<!-- Discovery Modal -->
 	<SessionDiscoveryModal 
 		bind:this={discoveryModal}
-		on:sessions-imported={handleSessionsImported}
 	/>
 </div>
