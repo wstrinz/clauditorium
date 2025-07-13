@@ -57,8 +57,10 @@ export class SdkSessionManager {
 			console.error('Failed to save session to database:', error);
 		}
 		
-		// Start the query
-		await this.runQuery(sessionData, prompt, { maxTurns, resume: continueFrom });
+		// Start the query in the background (don't await it)
+		this.runQuery(sessionData, prompt, { maxTurns, resume: continueFrom }).catch(error => {
+			console.error('Query failed for session', sessionId, ':', error);
+		});
 		
 		return sessionData;
 	}
@@ -91,8 +93,10 @@ export class SdkSessionManager {
 		}
 		
 		// Create a new query with the resume parameter to continue from where we left off
-		await this.runQuery(session, message, { 
+		this.runQuery(session, message, { 
 			resume: session.claudeSessionId 
+		}).catch(error => {
+			console.error('Query failed for session', sessionId, ':', error);
 		});
 	}
 	

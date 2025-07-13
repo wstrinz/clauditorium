@@ -20,94 +20,184 @@
 	let autoScroll = $state(true);
 	let isScrollingProgrammatically = false;
 	
-	// Group messages into conversation turns
-	const conversationTurns = $derived(() => {
-		const turns: Array<{
+	// Group messages into conversation steps with enhanced hierarchy
+	const conversationSteps = $derived(() => {
+		const steps: Array<{
 			id: string;
 			messages: SDKMessage[];
 			isExpanded: boolean;
 			summary: string;
-			type: 'system' | 'conversation' | 'result';
+			type: 'system' | 'conversation' | 'tool_execution' | 'result';
+			status: 'completed' | 'in_progress' | 'pending';
+			startTime: Date | null;
+			endTime: Date | null;
+			duration: number | null;
+			toolCount: number;
+			hasError: boolean;
 		}> = [];
 		
-		let currentTurn: SDKMessage[] = [];
-		let turnId = 0;
+		let currentStep: SDKMessage[] = [];
+		let stepId = 0;
 		
 		for (const message of messages) {
-			// Start new turn on system messages or when switching from assistant to user
-			const shouldStartNewTurn = 
+			// Enhanced turn detection - group tool request/result pairs together
+			const shouldStartNewStep = 
 				message.type === 'system' ||
 				message.type === 'result' ||
-				(currentTurn.length > 0 && 
-				 currentTurn[currentTurn.length - 1].type === 'assistant' && 
-				 message.type === 'user');
+				(currentStep.length > 0 && 
+				 currentStep[currentStep.length - 1].type === 'assistant' && 
+				 message.type === 'user' &&
+				 // Don't split if this user message is a tool result for previous assistant tool request
+				 !isToolResultForPreviousRequest(message, currentStep));
 			
-			if (shouldStartNewTurn && currentTurn.length > 0) {
-				// Finish current turn
-				const turnMessages = [...currentTurn];
-				const summary = summarizeTurn(turnMessages);
-				const type = turnMessages[0].type === 'system' ? 'system' : 'conversation';
+			if (shouldStartNewStep && currentStep.length > 0) {
+				// Finish current step
+				const stepMessages = [...currentStep];
+				const stepInfo = analyzeStep(stepMessages);
 				
-				turns.push({
-					id: `turn-${turnId++}`,
-					messages: turnMessages,
-					isExpanded: turns.length === 0 || turns.length >= Math.max(0, turns.length - 2), // Keep last 2 turns expanded
-					summary,
-					type
+				steps.push({
+					id: `step-${stepId++}`,
+					messages: stepMessages,
+					isExpanded: false, // Will be determined after all steps are processed
+					...stepInfo
 				});
-				currentTurn = [];
+				currentStep = [];
 			}
 			
-			currentTurn.push(message);
+			currentStep.push(message);
 		}
 		
-		// Add final turn if any messages remain
-		if (currentTurn.length > 0) {
-			const summary = summarizeTurn(currentTurn);
-			const type = currentTurn[0].type === 'result' ? 'result' : 
-						currentTurn[0].type === 'system' ? 'system' : 'conversation';
+		// Add final step if any messages remain
+		if (currentStep.length > 0) {
+			const stepInfo = analyzeStep(currentStep);
 			
-			turns.push({
-				id: `turn-${turnId++}`,
-				messages: currentTurn,
-				isExpanded: true, // Always expand the last turn
-				summary,
-				type
+			steps.push({
+				id: `step-${stepId++}`,
+				messages: currentStep,
+				isExpanded: false, // Will be determined after all steps are processed
+				...stepInfo
 			});
 		}
 		
-		return turns;
-	});
-	
-	function summarizeTurn(messages: SDKMessage[]): string {
-		if (messages.length === 0) return 'Empty turn';
+		// Now determine expansion state for all steps
+		const totalSteps = steps.length;
+		for (let i = 0; i < steps.length; i++) {
+			steps[i].isExpanded = determineInitialExpansion(i, steps[i].type, isConnected, totalSteps);
+		}
 		
+		// Mark last conversation step as in progress if session is connected
+		if (isConnected && steps.length > 0) {
+			const lastStep = steps[steps.length - 1];
+			if (lastStep.type === 'conversation' && !isCompleted) {
+				lastStep.status = 'in_progress';
+			}
+		}
+		
+		return steps;
+	});
+
+	function isToolResultForPreviousRequest(message: SDKMessage, currentStep: SDKMessage[]): boolean {
+		if (message.type !== 'user') return false;
+		
+		const userMsg = message as any;
+		const hasToolResults = userMsg.message?.content?.some((c: any) => c.type === 'tool_result');
+		if (!hasToolResults) return false;
+		
+		// Check if any previous assistant message in current step has tool_use
+		const lastAssistantMsg = currentStep.filter(m => m.type === 'assistant').pop() as any;
+		if (!lastAssistantMsg?.message?.content) return false;
+		
+		return lastAssistantMsg.message.content.some((c: any) => c.type === 'tool_use');
+	}
+
+	function analyzeStep(messages: SDKMessage[]) {
 		const firstMessage = messages[0];
 		const lastMessage = messages[messages.length - 1];
 		
-		if (firstMessage.type === 'system') {
-			return '🔧 System initialized';
-		}
+		// Extract timestamps if available
+		const startTime = (firstMessage as any).timestamp ? new Date((firstMessage as any).timestamp) : null;
+		const endTime = (lastMessage as any).timestamp ? new Date((lastMessage as any).timestamp) : null;
+		const duration = startTime && endTime ? endTime.getTime() - startTime.getTime() : null;
 		
-		if (firstMessage.type === 'result') {
-			return '🏁 Session completed';
-		}
-		
-		// Count message types in this turn
+		// Analyze message types
 		const userMsgs = messages.filter(m => m.type === 'user').length;
 		const assistantMsgs = messages.filter(m => m.type === 'assistant').length;
+		const toolRequests = messages.filter(m => 
+			m.type === 'assistant' && (m as any).message?.content?.some((c: any) => c.type === 'tool_use')
+		).length;
 		const toolResults = messages.filter(m => 
 			m.type === 'user' && (m as any).message?.content?.some((c: any) => c.type === 'tool_result')
 		).length;
 		
-		if (toolResults > 0) {
-			return `💬 Exchange with ${toolResults} tool${toolResults > 1 ? 's' : ''}`;
+		// Determine step type
+		let type: 'system' | 'conversation' | 'tool_execution' | 'result';
+		let summary: string;
+		let status: 'completed' | 'in_progress' | 'pending';
+		
+		if (firstMessage.type === 'system') {
+			type = 'system';
+			summary = '🔧 System initialization';
+			status = 'completed';
+		} else if (firstMessage.type === 'result') {
+			type = 'result';
+			summary = '🏁 Session completed';
+			status = 'completed';
+		} else if (toolRequests > 0 || toolResults > 0) {
+			type = 'tool_execution';
+			summary = `🛠️ Tool execution (${Math.max(toolRequests, toolResults)} tool${Math.max(toolRequests, toolResults) !== 1 ? 's' : ''})`;
+			// Check if step is still in progress (has tool requests but no results, or has pending approvals)
+			status = toolRequests > toolResults || pendingToolApprovals.size > 0 ? 'in_progress' : 'completed';
+		} else {
+			type = 'conversation';
+			summary = `💬 Conversation (${assistantMsgs} response${assistantMsgs !== 1 ? 's' : ''})`;
+			// Mark as in progress if it's the last message group and session is connected
+			status = 'completed'; // Default to completed, will be updated for the last step if needed
 		}
 		
-		return `💬 Conversation (${assistantMsgs} response${assistantMsgs !== 1 ? 's' : ''})`;
+		// Check for errors
+		const hasError = messages.some(m => (m as any).error || (m as any).message?.error);
+		
+		return {
+			summary,
+			type,
+			status,
+			startTime,
+			endTime,
+			duration,
+			toolCount: Math.max(toolRequests, toolResults),
+			hasError
+		};
 	}
+
+	function determineInitialExpansion(stepIndex: number, stepType: string, isConnected: boolean, totalSteps: number): boolean {
+		// Always expand system initialization and results
+		if (stepType === 'system' || stepType === 'result') return true;
+		
+		// For active sessions, only show current and previous step
+		if (isConnected) {
+			return stepIndex >= Math.max(0, totalSteps - 2);
+		}
+		
+		// For completed sessions, show last 3 steps
+		return stepIndex >= Math.max(0, totalSteps - 3);
+	}
+
+	// Session progress overview
+	const sessionProgress = $derived(() => {
+		const steps = conversationSteps();
+		const completedSteps = steps.filter(s => s.status === 'completed').length;
+		const inProgressSteps = steps.filter(s => s.status === 'in_progress').length;
+		const totalDuration = steps.reduce((acc, s) => acc + (s.duration || 0), 0);
+		
+		return {
+			steps,
+			completedSteps,
+			inProgressSteps,
+			totalDuration
+		};
+	});
 	
-	let expandedTurns = $state<Set<string>>(new Set());
+	let expandedSteps = $state<Set<string>>(new Set());
 	let chatInput = $state('');
 	let isSending = $state(false);
 	let pendingToolApprovals = $state<Map<string, {
@@ -118,13 +208,13 @@
 		approved: boolean;
 	}>>(new Map());
 	
-	function toggleTurn(turnId: string) {
-		if (expandedTurns.has(turnId)) {
-			expandedTurns.delete(turnId);
+	function toggleStep(stepId: string) {
+		if (expandedSteps.has(stepId)) {
+			expandedSteps.delete(stepId);
 		} else {
-			expandedTurns.add(turnId);
+			expandedSteps.add(stepId);
 		}
-		expandedTurns = new Set(expandedTurns);
+		expandedSteps = new Set(expandedSteps);
 	}
 	
 	async function sendMessage() {
@@ -417,6 +507,28 @@
 		previousMessageCount = currentCount;
 	});
 
+	// Create a map of tool use ID to tool request details
+	const toolRequestMap = $derived(() => {
+		const map = new Map();
+		messages.forEach(message => {
+			if (message.type === 'assistant') {
+				const assistantMsg = message as any;
+				if (assistantMsg.message?.content) {
+					assistantMsg.message.content.forEach((c: any) => {
+						if (c.type === 'tool_use') {
+							map.set(c.id, {
+								name: c.name,
+								input: c.input,
+								message: assistantMsg
+							});
+						}
+					});
+				}
+			}
+		});
+		return map;
+	});
+
 	function formatMessageContent(message: SDKMessage): string {
 		switch (message.type) {
 			case 'system':
@@ -447,12 +559,20 @@
 					const hasUserText = userMsg.message.content.some((c: any) => c.type === 'text');
 					
 					if (hasToolResults && !hasUserText) {
-						// Pure tool results - format as tool output
+						// Pure tool results - format with original tool request
 						return userMsg.message.content.map((c: any) => {
 							if (c.type === 'tool_result') {
+								const toolRequest = toolRequestMap().get(c.tool_use_id);
 								const content = typeof c.content === 'string' ? c.content : JSON.stringify(c.content);
 								const preview = content.length > 200 ? content.substring(0, 200) + '...' : content;
-								return `🔧 Tool Output (${c.tool_use_id?.substring(0, 8) || 'unknown'}):\n${preview}`;
+								
+								let output = '';
+								if (toolRequest) {
+									const input = toolRequest.input ? Object.entries(toolRequest.input).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ') : '';
+									output += `🔧 Tool Request: ${toolRequest.name}\n${input ? `• Input: ${input}` : '• No input parameters'}\n\n`;
+								}
+								output += `📤 Tool Result (${c.tool_use_id?.substring(0, 8) || 'unknown'}):\n${preview}`;
+								return output;
 							}
 							return '';
 						}).filter(Boolean).join('\n\n');
@@ -462,9 +582,17 @@
 							if (c.type === 'text') {
 								return c.text;
 							} else if (c.type === 'tool_result') {
+								const toolRequest = toolRequestMap().get(c.tool_use_id);
 								const content = typeof c.content === 'string' ? c.content : JSON.stringify(c.content);
 								const preview = content.length > 200 ? content.substring(0, 200) + '...' : content;
-								return `🔧 Tool Output (${c.tool_use_id?.substring(0, 8) || 'unknown'}):\n${preview}`;
+								
+								let output = '';
+								if (toolRequest) {
+									const input = toolRequest.input ? Object.entries(toolRequest.input).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ') : '';
+									output += `🔧 Tool Request: ${toolRequest.name}\n${input ? `• Input: ${input}` : '• No input parameters'}\n\n`;
+								}
+								output += `📤 Tool Result (${c.tool_use_id?.substring(0, 8) || 'unknown'}):\n${preview}`;
+								return output;
 							}
 							return '[Content]';
 						}).join('\n\n');
@@ -522,11 +650,30 @@
 			<div class="badge badge-sm {isConnected ? 'badge-success' : isCompleted ? 'badge-neutral' : 'badge-error'}">
 				{isConnected ? 'Connected' : isCompleted ? 'Completed' : 'Disconnected'}
 			</div>
-			<div class="text-sm text-base-content/60">
-				{messages.length} messages
-				{#if messages.length > 50}
-					(showing last 50)
+			
+			<!-- Session Progress Overview -->
+			<div class="flex gap-2 text-sm">
+				<div class="flex items-center gap-1">
+					<span class="text-base-content/60">Steps:</span>
+					<span class="font-mono">{sessionProgress().completedSteps}/{sessionProgress().steps.length}</span>
+					{#if sessionProgress().inProgressSteps > 0}
+						<span class="loading loading-spinner loading-xs text-blue-500"></span>
+					{/if}
+				</div>
+				
+				{#if sessionProgress().totalDuration > 0}
+					<div class="flex items-center gap-1">
+						<span class="text-base-content/60">Duration:</span>
+						<span class="font-mono">{(sessionProgress().totalDuration / 1000).toFixed(1)}s</span>
+					</div>
 				{/if}
+				
+				<div class="text-base-content/60">
+					{messages.length} messages
+					{#if messages.length > 50}
+						(showing last 50)
+					{/if}
+				</div>
 			</div>
 		</div>
 		
@@ -567,7 +714,7 @@
 		</div>
 	{/if}
 
-	<!-- Conversation Turns -->
+	<!-- Conversation Steps -->
 	<div 
 		bind:this={messagesContainer}
 		class="flex-1 p-4 overflow-y-auto space-y-4"
@@ -579,32 +726,69 @@
 			</div>
 		{/if}
 
-		{#each conversationTurns() as turn}
-			{@const isExpanded = turn.isExpanded || expandedTurns.has(turn.id)}
-			<div class="conversation-turn border rounded-lg shadow-sm bg-base-100">
-				<!-- Turn Header (Collapsible) -->
+		{#each conversationSteps() as step}
+			{@const isExpanded = step.isExpanded || expandedSteps.has(step.id)}
+			{@const statusColor = step.status === 'in_progress' ? 'border-blue-300 bg-blue-50' : 
+							   step.status === 'pending' ? 'border-orange-300 bg-orange-50' :
+							   step.hasError ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'}
+			<div class="conversation-step border rounded-lg shadow-sm bg-base-100 {statusColor}">
+				<!-- Step Header (Collapsible) -->
 				<button 
-					class="w-full p-3 flex items-center justify-between hover:bg-base-200 transition-colors border-b border-base-300"
-					onclick={() => toggleTurn(turn.id)}
+					class="w-full p-3 flex items-center justify-between hover:bg-base-200/50 transition-colors border-b border-base-300"
+					onclick={() => toggleStep(step.id)}
 				>
 					<div class="flex items-center gap-3">
 						<div class="collapse-icon transition-transform {isExpanded ? 'rotate-90' : ''}">
 							▶
 						</div>
-						<span class="font-medium">{turn.summary}</span>
-						<span class="badge badge-sm badge-outline">
-							{turn.messages.length} message{turn.messages.length !== 1 ? 's' : ''}
-						</span>
+						
+						<!-- Status indicator -->
+						<div class="flex items-center gap-2">
+							{#if step.status === 'in_progress'}
+								<span class="loading loading-spinner loading-sm text-blue-500"></span>
+							{:else if step.status === 'pending'}
+								<span class="text-orange-500">⏳</span>
+							{:else if step.hasError}
+								<span class="text-red-500">❌</span>
+							{:else}
+								<span class="text-green-500">✅</span>
+							{/if}
+							
+							<span class="font-medium">{step.summary}</span>
+						</div>
+						
+						<!-- Step metadata badges -->
+						<div class="flex gap-1">
+							<span class="badge badge-xs badge-outline">
+								{step.messages.length} msg{step.messages.length !== 1 ? 's' : ''}
+							</span>
+							{#if step.toolCount > 0}
+								<span class="badge badge-xs badge-outline">
+									🛠️ {step.toolCount}
+								</span>
+							{/if}
+							{#if step.duration}
+								<span class="badge badge-xs badge-outline">
+									⏱️ {(step.duration / 1000).toFixed(1)}s
+								</span>
+							{/if}
+						</div>
 					</div>
+					
+					<!-- Timestamp -->
 					<div class="text-xs text-base-content/60">
-						{new Date((turn.messages[0] as any).timestamp || Date.now()).toLocaleTimeString()}
+						{#if step.startTime}
+							{step.startTime.toLocaleTimeString()}
+						{:else}
+							{new Date((step.messages[0] as any).timestamp || Date.now()).toLocaleTimeString()}
+						{/if}
 					</div>
 				</button>
 
-				<!-- Turn Content (Collapsible) -->
+				<!-- Step Content (Collapsible) -->
 				{#if isExpanded}
-					<div class="turn-content">
-						{#each turn.messages as message, index}
+					<div class="step-content">
+						{#each step.messages as message, index}
 							{@const isToolResultOnly = message.type === 'user' && (message as any).message?.content?.every((c: any) => c.type === 'tool_result')}
 							{@const displayType = isToolResultOnly ? 'tool_result' : message.type}
 							<div class="message border-b border-base-200 last:border-b-0">
