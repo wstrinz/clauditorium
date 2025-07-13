@@ -236,11 +236,12 @@
 		discoveryModal.open();
 	}
 
-	function handleSdkSessionCreated(sessionId: string) {
+	async function handleSdkSessionCreated(sessionId: string) {
 		// Switch to SDK view and set as active session
 		currentView = 'sdk';
 		setActiveSession(sessionId);
-		loadSessions();
+		await loadSessions();
+		showSdkCreator = false; // Ensure modal closes
 	}
 
 	function handleSdkSessionComplete(sessionId: string) {

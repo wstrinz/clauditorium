@@ -1,10 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { query, type SDKMessage } from '@anthropic-ai/claude-code';
 import { randomBytes } from 'crypto';
 import * as sessionDb from '$lib/server/services/session-db';
 import { initDatabase } from '$lib/server/db/init';
-import { activeSdkSessions, type ActiveSdkSession } from '$lib/server/services/sdk-sessions';
+import { activeSdkSessions } from '$lib/server/services/sdk-sessions';
+import { SdkSessionManager } from '$lib/server/services/sdk-session-manager';
 
 // Initialize database on first load
 let dbInitialized = false;
@@ -24,7 +24,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			workingDirectory = process.env.HOME || '~', 
 			name = 'New SDK Session',
 			maxTurns = 10,
-			resumeSessionId = null // For resuming SDK sessions
+			continueFrom = null // For continuing from existing sessions
 		} = await request.json();
 		
 		if (!prompt) {
@@ -32,122 +32,28 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 		
 		const sessionId = `sdk-session-${Date.now()}-${randomBytes(4).toString('hex')}`;
-		const abortController = new AbortController();
 		
-		// Save session to database if available
-		let createdAt = new Date();
-		if (dbInitialized) {
-			try {
-				const dbSession = await sessionDb.createSession({
-					sessionId,
-					name,
-					status: 'active',
-					workingDirectory,
-					hasBackendProcess: true,
-					useContinueFlag: false,
-					canReinitialize: false,
-					metadata: {
-						source: 'sdk',
-						prompt,
-						maxTurns
-					},
-					sessionType: 'sdk',
-					claudeSessionId: undefined,
-					isClaudeSession: false,
-					claudeSessionPath: undefined,
-					discoveredAt: undefined
-				});
-				createdAt = dbSession.createdAt;
-			} catch (dbError) {
-				console.error('Failed to save session to database:', dbError);
-			}
-		}
-
-		// Store session in memory
-		const sessionData: ActiveSdkSession = {
-			abortController,
+		// Start session using the new session manager
+		const sessionData = await SdkSessionManager.startSession({
 			sessionId,
-			createdAt,
+			prompt,
 			workingDirectory,
-			messages: [],
-			isCompleted: false
-		};
-		activeSdkSessions.set(sessionId, sessionData);
-
-		// Start SDK query in background
-		(async () => {
-			try {
-				for await (const message of query({
-					prompt,
-					abortController,
-					options: {
-						maxTurns,
-						...(resumeSessionId ? { resumeSessionId } : {})
-					},
-				})) {
-					sessionData.messages.push(message);
-					
-					// Save message to database
-					if (dbInitialized) {
-						try {
-							// Note: This would require the sdkMessages table to exist
-							// For now, we'll store in session history as JSON
-							await sessionDb.addSessionHistory({
-								sessionId,
-								timestamp: new Date(),
-								type: 'output',
-								content: JSON.stringify(message)
-							});
-						} catch (dbError) {
-							console.error('Failed to save SDK message:', dbError);
-						}
-					}
-				}
-				
-				sessionData.isCompleted = true;
-				
-				// Update session status in database
-				if (dbInitialized) {
-					try {
-						await sessionDb.updateSession(sessionId, {
-							status: 'completed' as const,
-							hasBackendProcess: false,
-							lastActiveAt: new Date()
-						});
-					} catch (dbError) {
-						console.error('Failed to update session status:', dbError);
-					}
-				}
-				
-			} catch (error) {
-				console.error('SDK query failed:', error);
-				sessionData.isCompleted = true;
-				
-				// Mark session as crashed
-				if (dbInitialized) {
-					try {
-						await sessionDb.updateSession(sessionId, {
-							status: 'crashed' as const,
-							hasBackendProcess: false,
-							lastActiveAt: new Date()
-						});
-					} catch (dbError) {
-						console.error('Failed to update session status:', dbError);
-					}
-				}
-			}
-		})();
+			maxTurns,
+			name,
+			continueFrom
+		});
 
 		return json({
-			sessionId,
+			sessionId: sessionData.sessionId,
 			name,
 			status: 'created',
-			workingDirectory,
-			createdAt,
+			workingDirectory: sessionData.workingDirectory,
+			createdAt: sessionData.createdAt,
 			hasBackendProcess: true,
 			sessionType: 'sdk',
 			prompt,
-			maxTurns
+			maxTurns,
+			claudeSessionId: sessionData.claudeSessionId
 		});
 	} catch (error) {
 		console.error('Failed to create SDK session:', error);
@@ -207,9 +113,8 @@ export const DELETE: RequestHandler = async ({ url }) => {
 			return json({ error: 'Session not found' }, { status: 404 });
 		}
 		
-		// Abort the session
-		session.abortController.abort();
-		activeSdkSessions.delete(sessionId);
+		// Terminate the session using the session manager
+		SdkSessionManager.terminateSession(sessionId);
 		
 		// Update database
 		if (dbInitialized) {

@@ -59,10 +59,18 @@
 
 			const sessionData = await response.json();
 			
+			// Reset form state
+			prompt = '';
+			sessionName = '';
+			workingDirectory = '';
+			maxTurns = 10;
+			
+			// Call session created callback
 			if (onSessionCreated) {
-				onSessionCreated(sessionData.sessionId);
+				await onSessionCreated(sessionData.sessionId);
 			}
 			
+			// Close modal
 			if (onClose) {
 				onClose();
 			}
