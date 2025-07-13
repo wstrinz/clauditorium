@@ -147,6 +147,7 @@ export class SdkSessionManager {
 				abortController: session.abortController,
 				options: {
 					maxTurns: options.maxTurns,
+					permissionMode: 'bypassPermissions', // Skip permission prompts entirely
 					...(options.continue ? { continue: true } : {}),
 					...(options.resume ? { resume: options.resume } : {})
 				}
@@ -167,25 +168,8 @@ export class SdkSessionManager {
 					}
 				}
 				
-				// Check for tool use requests
-				if (message.type === 'assistant') {
-					const assistantMsg = message as any;
-					const toolUses = assistantMsg.message?.content?.filter((c: any) => c.type === 'tool_use') || [];
-					
-					if (toolUses.length > 0) {
-						// Mark tools as pending approval
-						for (const toolUse of toolUses) {
-							session.pendingToolApprovals?.set(toolUse.id, false);
-						}
-						
-						// Pause the session to wait for approval
-						session.isPaused = true;
-						
-						// In a real implementation, we would need to handle pausing the generator
-						// For now, the SDK doesn't support pausing mid-stream, so tool approval
-						// is more of a UI feature than actual control
-					}
-				}
+				// Since we're using bypassPermissions mode, we don't need to track tool approvals
+				// The SDK will automatically execute all tools without prompting
 				
 				// Save message to database
 				try {

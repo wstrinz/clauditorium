@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { toolApprovalStore, COMMON_TOOLS, type ToolName } from '$lib/stores/tool-approvals';
+
 	interface Props {
 		onSessionCreated?: (sessionId: string) => void;
 		isOpen?: boolean;
@@ -17,6 +19,16 @@
 	let maxTurns = $state(10);
 	let isCreating = $state(false);
 	let error = $state<string | null>(null);
+	
+	// Tool approval settings
+	let preApprovedTools = $state<Set<ToolName>>(new Set());
+	let showToolSettings = $state(false);
+	
+	// Subscribe to global tool approval settings
+	let globalSettings = $state($toolApprovalStore);
+	toolApprovalStore.subscribe(value => {
+		globalSettings = value;
+	});
 
 	// Reset form when modal opens
 	$effect(() => {
@@ -26,8 +38,31 @@
 			workingDirectory = '';
 			maxTurns = 10;
 			error = null;
+			preApprovedTools = new Set();
+			showToolSettings = false;
 		}
 	});
+
+	function toggleTool(toolName: ToolName) {
+		if (preApprovedTools.has(toolName)) {
+			preApprovedTools.delete(toolName);
+		} else {
+			preApprovedTools.add(toolName);
+		}
+		preApprovedTools = new Set(preApprovedTools);
+	}
+
+	function toggleGlobalTool(toolName: ToolName) {
+		if (globalSettings.globallyApprovedTools.has(toolName)) {
+			toolApprovalStore.removeGlobalTool(toolName);
+		} else {
+			toolApprovalStore.addGlobalTool(toolName);
+		}
+	}
+
+	function isToolGloballyApproved(toolName: ToolName): boolean {
+		return globalSettings.globallyApprovedTools.has(toolName);
+	}
 
 	async function createSession() {
 		if (!prompt.trim()) {
@@ -59,11 +94,18 @@
 
 			const sessionData = await response.json();
 			
+			// Set pre-approved tools for this session
+			if (preApprovedTools.size > 0) {
+				toolApprovalStore.setSessionApprovals(Array.from(preApprovedTools));
+			}
+			
 			// Reset form state
 			prompt = '';
 			sessionName = '';
 			workingDirectory = '';
 			maxTurns = 10;
+			preApprovedTools = new Set();
+			showToolSettings = false;
 			
 			// Call session created callback
 			if (onSessionCreated) {
@@ -187,6 +229,103 @@
 					<label class="label">
 						<span class="label-text-alt">Maximum conversation turns (1-50)</span>
 					</label>
+				</div>
+
+				<!-- Tool Approval Settings -->
+				<div class="form-control">
+					<div class="flex items-center justify-between">
+						<label class="label">
+							<span class="label-text font-medium">Tool Approval Settings</span>
+						</label>
+						<button 
+							type="button"
+							class="btn btn-sm btn-ghost"
+							onclick={() => showToolSettings = !showToolSettings}
+						>
+							{showToolSettings ? '🔼' : '🔽'} {showToolSettings ? 'Hide' : 'Show'}
+						</button>
+					</div>
+					
+					<!-- Notice about automatic tool approval -->
+					<div class="alert alert-info text-sm">
+						<div>
+							<div class="font-medium">🤖 Automatic Tool Approval</div>
+							<div>Tools are automatically approved for SDK sessions. Manual approval settings below are for legacy/testing purposes.</div>
+						</div>
+					</div>
+					
+					{#if showToolSettings}
+						<div class="bg-base-200 rounded-lg p-4 space-y-4">
+							<!-- Global approval toggle -->
+							<div class="flex items-center justify-between">
+								<div>
+									<div class="font-medium">Remember approvals globally</div>
+									<div class="text-sm text-base-content/70">Save tool approvals across all sessions</div>
+								</div>
+								<input 
+									type="checkbox" 
+									class="toggle toggle-primary"
+									checked={globalSettings.rememberApprovalsGlobally}
+									onchange={() => toolApprovalStore.toggleRememberGlobally()}
+								/>
+							</div>
+
+							<!-- Tools list -->
+							<div>
+								<div class="font-medium mb-3">Pre-approve tools for this session:</div>
+								<div class="grid grid-cols-2 gap-2">
+									{#each COMMON_TOOLS as toolName}
+										{@const isGlobal = isToolGloballyApproved(toolName)}
+										{@const isSessionSelected = preApprovedTools.has(toolName)}
+										<div class="flex items-center justify-between p-2 bg-base-100 rounded border">
+											<div class="flex items-center gap-2">
+												<span class="font-mono text-sm">{toolName}</span>
+												{#if isGlobal}
+													<span class="badge badge-primary badge-xs">Global</span>
+												{/if}
+											</div>
+											<div class="flex gap-1">
+												{#if !isGlobal}
+													<input 
+														type="checkbox"
+														class="checkbox checkbox-sm checkbox-info"
+														checked={isSessionSelected}
+														onchange={() => toggleTool(toolName)}
+														title="Pre-approve for this session"
+													/>
+												{/if}
+												<input 
+													type="checkbox"
+													class="checkbox checkbox-sm checkbox-primary"
+													checked={isGlobal}
+													onchange={() => toggleGlobalTool(toolName)}
+													title="Always approve globally"
+												/>
+											</div>
+										</div>
+									{/each}
+								</div>
+								
+								<div class="text-xs text-base-content/60 mt-2">
+									<div class="flex gap-4">
+										<span>🔵 Session only</span>
+										<span>🟣 Global (permanent)</span>
+									</div>
+								</div>
+							</div>
+
+							{#if globalSettings.globallyApprovedTools.size > 0}
+								<div class="alert alert-info">
+									<div>
+										<div class="font-medium">Globally approved tools:</div>
+										<div class="text-sm">
+											{Array.from(globalSettings.globallyApprovedTools).join(', ')}
+										</div>
+									</div>
+								</div>
+							{/if}
+						</div>
+					{/if}
 				</div>
 
 				<!-- Info box -->

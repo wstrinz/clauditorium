@@ -7,20 +7,11 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const { sessionId } = params;
 	const { message, toolApprovals } = await request.json();
 	
-	// Handle tool approvals
+	// Note: Tool approvals are now handled via bypassPermissions mode in the SDK
+	// This endpoint still accepts tool approval requests for backwards compatibility
+	// but they're no longer needed since permissions are bypassed
 	if (toolApprovals) {
-		try {
-			for (const [toolUseId, approved] of Object.entries(toolApprovals as Record<string, boolean>)) {
-				SdkSessionManager.approveToolUse(sessionId, toolUseId, approved);
-			}
-			return json({ success: true, message: 'Tool approvals processed' });
-		} catch (error) {
-			console.error('Failed to process tool approvals:', error);
-			return json({ 
-				error: 'Failed to process tool approvals',
-				details: error instanceof Error ? error.message : 'Unknown error'
-			}, { status: 500 });
-		}
+		return json({ success: true, message: 'Tool approvals no longer needed (permissions bypassed)' });
 	}
 	
 	// Handle new message
