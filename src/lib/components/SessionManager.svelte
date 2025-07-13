@@ -5,28 +5,34 @@
 	import ClaudeTerminal from './ClaudeTerminal.svelte';
 	import DirectoryPickerNew from './DirectoryPickerNew.svelte';
 	import SessionDiscoveryModal from './SessionDiscoveryModal.svelte';
+	import SdkSession from './SdkSession.svelte';
+	// import SdkSession from './SdkSessionSimple.svelte';
+	import SdkSessionCreator from './SdkSessionCreator.svelte';
 	import { sessionStore, getActiveSession, loadSessions, setActiveSession, refreshSessions } from '$lib/stores/session-store.svelte';
 	let isCreatingSession = $state(false);
 	let newSessionName = $state('');
 	let newSessionDirectory = $state('');
 	let isMobileMenuOpen = $state(false);
-	let activeTerminal: ClaudeTerminal | null = null;
+	let activeTerminal = $state<ClaudeTerminal | null>(null);
 	let recentConfigs = $state<RecentConfig[]>([]);
 	let showRecentConfigs = $state(false);
 	let discoveryModal: SessionDiscoveryModal;
 	let renamingSessionId = $state<string | null>(null);
 	let newSessionNameForRename = $state('');
+	let showSdkCreator = $state(false);
+	let currentView = $state<'terminal' | 'sdk'>('terminal');
 
 	onMount(async () => {
-		await loadSessions();
-		loadRecentConfigs();
-		
-		// Connect to active session if one exists and has backend process
-		if (sessionStore.activeSessionId) {
-			const session = sessionStore.sessions.find(s => s.sessionId === sessionStore.activeSessionId);
-			if (session?.hasBackendProcess) {
-				connectToSession(sessionStore.activeSessionId);
-			}
+		try {
+			console.log('SessionManager mounting...');
+			loadRecentConfigs();
+			
+			// Load sessions
+			await loadSessions();
+			
+			console.log('SessionManager mounted successfully');
+		} catch (error) {
+			console.error('Error during SessionManager mount:', error);
 		}
 	});
 
@@ -228,6 +234,18 @@
 
 	function openDiscovery() {
 		discoveryModal.open();
+	}
+
+	function handleSdkSessionCreated(sessionId: string) {
+		// Switch to SDK view and set as active session
+		currentView = 'sdk';
+		setActiveSession(sessionId);
+		loadSessions();
+	}
+
+	function handleSdkSessionComplete(sessionId: string) {
+		console.log('SDK session completed:', sessionId);
+		loadSessions();
 	}
 
 	async function resumeClaudeSession(session: SessionInfo) {
@@ -537,14 +555,24 @@
 		<!-- Main content -->
 		<div class="flex-1 flex flex-col">
 			{#if getActiveSession()}
-				{#key getActiveSession()!.sessionId}
-					<ClaudeTerminal 
-						bind:this={activeTerminal}
-						sessionId={getActiveSession()!.sessionId}
-						onCommand={handleTerminalCommand}
-						onResize={handleTerminalResize}
-					/>
-				{/key}
+				{@const activeSession = getActiveSession()}
+				{#if activeSession && activeSession.sessionType === 'sdk'}
+					{#key activeSession.sessionId}
+						<SdkSession 
+							sessionId={activeSession.sessionId}
+							onSessionComplete={handleSdkSessionComplete}
+						/>
+					{/key}
+				{:else if activeSession}
+					{#key activeSession.sessionId}
+						<ClaudeTerminal 
+							bind:this={activeTerminal}
+							sessionId={activeSession.sessionId}
+							onCommand={handleTerminalCommand}
+							onResize={handleTerminalResize}
+						/>
+					{/key}
+				{/if}
 			{:else}
 				<div class="flex-1 flex items-center justify-center p-4">
 					<div class="text-center max-w-2xl">
@@ -552,12 +580,26 @@
 						<p class="text-base-content/60 mb-6">
 							Select a session from the sidebar or create a new one to get started.
 						</p>
-						<button 
-							class="btn btn-primary mb-8"
-							onclick={() => { isCreatingSession = true; isMobileMenuOpen = true; }}
-						>
-							Create New Session
-						</button>
+						
+						<div class="flex gap-4 justify-center mb-8">
+							<button 
+								class="btn btn-primary"
+								onclick={() => { isCreatingSession = true; isMobileMenuOpen = true; }}
+							>
+								Terminal Session
+							</button>
+							<button 
+								class="btn btn-secondary"
+								onclick={() => { showSdkCreator = true; }}
+							>
+								SDK Session
+							</button>
+						</div>
+						
+						<div class="text-sm text-base-content/60 mb-6">
+							<strong>Terminal Session:</strong> Interactive Claude Code CLI in a terminal<br/>
+							<strong>SDK Session:</strong> Multi-turn conversations with streaming responses
+						</div>
 						
 						{#if recentConfigs.length > 0}
 							<div class="divider">OR</div>
@@ -593,5 +635,12 @@
 	<!-- Discovery Modal -->
 	<SessionDiscoveryModal 
 		bind:this={discoveryModal}
+	/>
+
+	<!-- SDK Session Creator -->
+	<SdkSessionCreator 
+		bind:isOpen={showSdkCreator}
+		onSessionCreated={handleSdkSessionCreated}
+		onClose={() => showSdkCreator = false}
 	/>
 </div>

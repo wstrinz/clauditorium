@@ -15,8 +15,15 @@
 
 	let terminalRef: Terminal;
 	let inputBuffer = '';
+	// Load scroll settings from localStorage
 	let autoScroll = $state(true);
+	let instantScroll = $state(
+		typeof localStorage !== 'undefined' 
+			? (localStorage.getItem('terminal-instant-scroll') !== 'false') // Default true unless explicitly false
+			: true // Default to true for SSR
+	);
 	let scrollDisposable: any;
+	let pendingScrollTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	// Special key mappings for Claude Code
 	const specialKeys = {
@@ -52,7 +59,17 @@
 	export function writeln(data: string) {
 		terminalRef?.writeln(data);
 		if (autoScroll) {
-			setTimeout(() => terminalRef?.scrollToBottom(), 0);
+			if (instantScroll) {
+				terminalRef?.scrollToBottom();
+			} else {
+				if (pendingScrollTimeout) {
+					clearTimeout(pendingScrollTimeout);
+				}
+				pendingScrollTimeout = setTimeout(() => {
+					terminalRef?.scrollToBottom();
+					pendingScrollTimeout = null;
+				}, 16);
+			}
 		}
 	}
 
@@ -67,6 +84,13 @@
 	export function scrollToBottom() {
 		terminalRef?.scrollToBottom();
 	}
+
+	// Save instant scroll setting to localStorage
+	$effect(() => {
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem('terminal-instant-scroll', String(instantScroll));
+		}
+	});
 
 	// Setup scroll detection when terminal is ready
 	$effect(() => {
@@ -86,6 +110,9 @@
 			if (scrollDisposable) {
 				scrollDisposable.dispose();
 			}
+			if (pendingScrollTimeout) {
+				clearTimeout(pendingScrollTimeout);
+			}
 		};
 	});
 
@@ -96,8 +123,19 @@
 		terminalRef?.write(data);
 		lastWriteTime = Date.now();
 		if (autoScroll) {
-			// Small delay to ensure content is rendered
-			setTimeout(() => terminalRef?.scrollToBottom(), 0);
+			if (instantScroll) {
+				// Instant scroll - no animation or delay
+				terminalRef?.scrollToBottom();
+			} else {
+				// Batched scrolling - debounce rapid scroll requests
+				if (pendingScrollTimeout) {
+					clearTimeout(pendingScrollTimeout);
+				}
+				pendingScrollTimeout = setTimeout(() => {
+					terminalRef?.scrollToBottom();
+					pendingScrollTimeout = null;
+				}, 16); // ~60fps for smooth scrolling
+			}
 		}
 	}
 
@@ -209,6 +247,16 @@
 					title="Auto-scroll to bottom"
 				/>
 				<span class="hidden sm:inline">Auto</span>
+			</label>
+			<label class="label cursor-pointer flex gap-1 text-xs">
+				<input 
+					type="checkbox" 
+					class="checkbox checkbox-xs" 
+					bind:checked={instantScroll}
+					title="Instant scroll (no animation) - better for fast output and mobile"
+				/>
+				<span class="hidden lg:inline">Instant</span>
+				<span class="lg:hidden">⚡</span>
 			</label>
 		</div>
 

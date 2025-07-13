@@ -4,11 +4,12 @@ export interface SessionInfo {
 	createdAt: Date;
 	lastActiveAt: Date;
 	workingDirectory: string;
-	status: 'active' | 'inactive' | 'terminated' | 'crashed';
+	status: 'active' | 'inactive' | 'terminated' | 'crashed' | 'completed';
 	hasBackendProcess: boolean;
 	useContinueFlag: boolean;
 	canReinitialize: boolean;
 	metadata?: Record<string, any>;
+	sessionType?: 'terminal' | 'sdk';
 	claudeSessionId?: string;
 	claudeSessionPath?: string;
 	isClaudeSession?: boolean;

@@ -7,12 +7,13 @@ export interface SessionData {
 	name: string;
 	createdAt: Date;
 	lastActiveAt: Date;
-	status: 'active' | 'inactive' | 'terminated' | 'crashed';
+	status: 'active' | 'inactive' | 'terminated' | 'crashed' | 'completed';
 	workingDirectory: string;
 	hasBackendProcess: boolean;
 	useContinueFlag: boolean;
 	canReinitialize: boolean;
 	metadata?: Record<string, any>;
+	sessionType?: 'terminal' | 'sdk';
 	claudeSessionId?: string;
 	claudeSessionPath?: string;
 	isClaudeSession?: boolean;
@@ -39,6 +40,7 @@ export async function createSession(data: Omit<SessionData, 'createdAt' | 'lastA
 		useContinueFlag: data.useContinueFlag,
 		canReinitialize: data.canReinitialize,
 		metadata: data.metadata,
+		sessionType: data.sessionType || 'terminal',
 		claudeSessionId: data.claudeSessionId,
 		claudeSessionPath: data.claudeSessionPath,
 		isClaudeSession: data.isClaudeSession ?? false,
@@ -47,11 +49,12 @@ export async function createSession(data: Omit<SessionData, 'createdAt' | 'lastA
 
 	return {
 		...inserted,
-		status: inserted.status as 'active' | 'inactive' | 'terminated' | 'crashed',
+		status: inserted.status as 'active' | 'inactive' | 'terminated' | 'crashed' | 'completed',
 		hasBackendProcess: inserted.hasBackendProcess ?? false,
 		useContinueFlag: inserted.useContinueFlag ?? false,
 		canReinitialize: inserted.canReinitialize ?? false,
 		metadata: inserted.metadata ?? undefined,
+		sessionType: (inserted.sessionType as 'terminal' | 'sdk') || 'terminal',
 		claudeSessionId: inserted.claudeSessionId ?? undefined,
 		claudeSessionPath: inserted.claudeSessionPath ?? undefined,
 		isClaudeSession: inserted.isClaudeSession ?? false,
@@ -71,11 +74,12 @@ export async function getSession(sessionId: string): Promise<SessionData | null>
 	const session = result[0];
 	return {
 		...session,
-		status: session.status as 'active' | 'inactive' | 'terminated' | 'crashed',
+		status: session.status as 'active' | 'inactive' | 'terminated' | 'crashed' | 'completed',
 		hasBackendProcess: session.hasBackendProcess ?? false,
 		useContinueFlag: session.useContinueFlag ?? false,
 		canReinitialize: session.canReinitialize ?? false,
 		metadata: session.metadata ?? undefined,
+		sessionType: (session.sessionType as 'terminal' | 'sdk') || 'terminal',
 		claudeSessionId: session.claudeSessionId ?? undefined,
 		claudeSessionPath: session.claudeSessionPath ?? undefined,
 		isClaudeSession: session.isClaudeSession ?? false,
@@ -95,11 +99,12 @@ export async function getSessionByClaudeId(claudeSessionId: string): Promise<Ses
 	const session = result[0];
 	return {
 		...session,
-		status: session.status as 'active' | 'inactive' | 'terminated' | 'crashed',
+		status: session.status as 'active' | 'inactive' | 'terminated' | 'crashed' | 'completed',
 		hasBackendProcess: session.hasBackendProcess ?? false,
 		useContinueFlag: session.useContinueFlag ?? false,
 		canReinitialize: session.canReinitialize ?? false,
 		metadata: session.metadata ?? undefined,
+		sessionType: (session.sessionType as 'terminal' | 'sdk') || 'terminal',
 		claudeSessionId: session.claudeSessionId ?? undefined,
 		claudeSessionPath: session.claudeSessionPath ?? undefined,
 		isClaudeSession: session.isClaudeSession ?? false,
@@ -114,11 +119,12 @@ export async function getAllSessions(): Promise<SessionData[]> {
 	
 	return results.map(session => ({
 		...session,
-		status: session.status as 'active' | 'inactive' | 'terminated' | 'crashed',
+		status: session.status as 'active' | 'inactive' | 'terminated' | 'crashed' | 'completed',
 		hasBackendProcess: session.hasBackendProcess ?? false,
 		useContinueFlag: session.useContinueFlag ?? false,
 		canReinitialize: session.canReinitialize ?? false,
 		metadata: session.metadata ?? undefined,
+		sessionType: (session.sessionType as 'terminal' | 'sdk') || 'terminal',
 		claudeSessionId: session.claudeSessionId ?? undefined,
 		claudeSessionPath: session.claudeSessionPath ?? undefined,
 		isClaudeSession: session.isClaudeSession ?? false,

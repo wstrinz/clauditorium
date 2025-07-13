@@ -201,8 +201,12 @@ export const GET: RequestHandler = async () => {
 			}
 		}
 		
-		// Get active sessions from memory
+		// Get active terminal sessions from memory
 		const memorySessions = getMemorySessions();
+		
+		// Temporarily disable SDK sessions in main list to avoid crashes
+		// TODO: Re-enable once the crash is fixed
+		const sdkSessions: any[] = [];
 		
 		// If no database sessions, create from memory sessions
 		if (sessions.length === 0 && memorySessions.size > 0) {
@@ -215,7 +219,8 @@ export const GET: RequestHandler = async () => {
 				status: 'active' as const,
 				hasBackendProcess: true,
 				useContinueFlag: false,
-				canReinitialize: false
+				canReinitialize: false,
+				sessionType: 'terminal'
 			}));
 		} else {
 			// Merge database sessions with memory state
@@ -225,10 +230,14 @@ export const GET: RequestHandler = async () => {
 					...dbSession,
 					// Override status if session is active in memory
 					status: isActive ? 'active' : dbSession.status,
-					hasBackendProcess: isActive || dbSession.hasBackendProcess
+					hasBackendProcess: isActive || dbSession.hasBackendProcess,
+					sessionType: dbSession.sessionType || 'terminal'
 				};
 			});
 		}
+
+		// Add SDK sessions to the list
+		sessions = [...sessions, ...sdkSessions];
 
 		return json({ sessions });
 	} catch (error) {

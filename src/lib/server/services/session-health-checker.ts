@@ -1,5 +1,6 @@
 import * as sessionDb from './session-db.js';
 import { getAllSessions as getMemorySessions } from '../../../routes/api/sessions/session-store.js';
+import { activeSdkSessions } from './sdk-sessions.js';
 
 export class SessionHealthChecker {
 	private checkInterval: NodeJS.Timeout | null = null;
@@ -31,9 +32,14 @@ export class SessionHealthChecker {
 			const memorySessions = getMemorySessions();
 			
 			// Find sessions that are marked active but not actually running
-			const staleSessions = activeSessions.filter(dbSession => 
-				!memorySessions.has(dbSession.sessionId)
-			);
+			const staleSessions = activeSessions.filter(dbSession => {
+				// Check if it's a regular terminal session
+				if (dbSession.sessionType !== 'sdk') {
+					return !memorySessions.has(dbSession.sessionId);
+				}
+				// Check if it's an SDK session
+				return !activeSdkSessions.has(dbSession.sessionId);
+			});
 
 			// Mark stale sessions as crashed
 			for (const staleSession of staleSessions) {
