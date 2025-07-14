@@ -75,12 +75,28 @@ export const GET: RequestHandler = async ({ url }) => {
 				return json({ error: 'Session not found' }, { status: 404 });
 			}
 			
+			// Try to get additional metadata from database
+			let metadata = {};
+			try {
+				const dbSession = await sessionDb.getSession(sessionId);
+				if (dbSession && dbSession.metadata) {
+					metadata = {
+						prompt: dbSession.metadata.prompt,
+						maxTurns: dbSession.metadata.maxTurns,
+						name: dbSession.name
+					};
+				}
+			} catch (error) {
+				console.error('Failed to fetch session metadata:', error);
+			}
+			
 			return json({
 				sessionId: session.sessionId,
 				messages: session.messages,
 				isCompleted: session.isCompleted,
 				createdAt: session.createdAt,
-				workingDirectory: session.workingDirectory
+				workingDirectory: session.workingDirectory,
+				...metadata
 			});
 		} else {
 			// List all SDK sessions

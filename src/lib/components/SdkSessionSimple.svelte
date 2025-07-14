@@ -31,7 +31,7 @@
 	}
 </script>
 
-<div class="flex flex-col h-full bg-base-100">
+<div class="flex flex-col h-full bg-base-200">
 	<!-- Simple header -->
 	<div class="p-4 border-b border-base-300">
 		<h2 class="text-lg font-semibold">SDK Session (Simple)</h2>
@@ -44,7 +44,7 @@
 
 	<!-- Error display -->
 	{#if error}
-		<div class="p-4 bg-red-100 text-red-700">
+		<div class="p-4 bg-red-500/20 text-red-600 border border-red-500/30 rounded">
 			Error: {error}
 		</div>
 	{/if}

@@ -9,6 +9,7 @@
 	// import SdkSession from './SdkSessionSimple.svelte';
 	import SdkSessionCreator from './SdkSessionCreator.svelte';
 	import { sessionStore, getActiveSession, loadSessions, setActiveSession, refreshSessions } from '$lib/stores/session-store.svelte';
+	import { toolApprovalStore } from '$lib/stores/tool-approvals';
 	let isCreatingSession = $state(false);
 	let newSessionName = $state('');
 	let newSessionDirectory = $state('');
@@ -21,6 +22,7 @@
 	let newSessionNameForRename = $state('');
 	let showSdkCreator = $state(false);
 	let currentView = $state<'terminal' | 'sdk'>('terminal');
+	let showSessionTypeMenu = $state(false);
 
 	onMount(async () => {
 		try {
@@ -246,6 +248,8 @@
 
 	function handleSdkSessionComplete(sessionId: string) {
 		console.log('SDK session completed:', sessionId);
+		// Clear session-specific tool approvals when session completes
+		toolApprovalStore.clearSessionApprovals();
 		loadSessions();
 	}
 
@@ -340,15 +344,35 @@
 				</svg>
 				<span class="hidden sm:inline">Discover</span>
 			</button>
-			<button 
-				class="btn btn-primary btn-sm"
-				onclick={() => { isCreatingSession = true; isMobileMenuOpen = true; }}
-			>
-				<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-				</svg>
-				<span class="hidden sm:inline">New Session</span>
-			</button>
+			<div class="dropdown dropdown-end">
+				<div tabindex="0" role="button" class="btn btn-primary btn-sm">
+					<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+					</svg>
+					<span class="hidden sm:inline">New Session</span>
+					<svg class="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 9-7 7-7-7"></path>
+					</svg>
+				</div>
+				<ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-52 p-2 shadow border border-base-300">
+					<li>
+						<button onclick={() => { isCreatingSession = true; isMobileMenuOpen = true; }}>
+							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3"></path>
+							</svg>
+							Terminal Session
+						</button>
+					</li>
+					<li>
+						<button onclick={() => { showSdkCreator = true; }}>
+							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path>
+							</svg>
+							SDK Session
+						</button>
+					</li>
+				</ul>
+			</div>
 		</div>
 	</div>
 

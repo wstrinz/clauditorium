@@ -13,7 +13,11 @@ export const COMMON_TOOLS = [
 	'LS',
 	'Task',
 	'WebFetch',
-	'WebSearch'
+	'WebSearch',
+	'TodoRead',
+	'TodoWrite',
+	'NotebookRead',
+	'NotebookEdit'
 ] as const;
 
 export type ToolName = typeof COMMON_TOOLS[number] | string;
@@ -31,11 +35,11 @@ export interface ToolApprovalSettings {
 }
 
 const DEFAULT_SETTINGS: ToolApprovalSettings = {
-	globallyApprovedTools: new Set(),
+	globallyApprovedTools: new Set(COMMON_TOOLS), // Auto-approve all common tools by default
 	sessionApprovedTools: new Set(),
 	globallyApprovedPatterns: new Set(),
 	sessionApprovedPatterns: new Set(),
-	rememberApprovalsGlobally: false
+	rememberApprovalsGlobally: true // Enable global approval by default for better UX
 };
 
 // Load settings from localStorage
@@ -198,6 +202,33 @@ function createToolApprovalStore() {
 				settings.sessionApprovedPatterns = new Set(patterns);
 				return settings;
 			});
+		},
+		
+		// Discover and auto-approve new tools that aren't in our known list
+		discoverAndAutoApproveTool: (toolName: ToolName) => {
+			let wasDiscovered = false;
+			update(settings => {
+				// Auto-approve any tool that isn't already approved
+				if (!settings.globallyApprovedTools.has(toolName)) {
+					if (COMMON_TOOLS.includes(toolName as any)) {
+						console.log('📋 Auto-approving common tool:', toolName);
+					} else {
+						console.log('🔍 Discovered new tool, auto-approving globally:', toolName);
+						wasDiscovered = true;
+					}
+					settings.globallyApprovedTools.add(toolName);
+					saveSettings(settings);
+				}
+				return settings;
+			});
+			return wasDiscovered;
+		},
+		
+		// Get all known tools (common + discovered)
+		getAllKnownTools: (): ToolName[] => {
+			const settings = loadSettings();
+			const allTools = new Set([...COMMON_TOOLS, ...settings.globallyApprovedTools, ...settings.sessionApprovedTools]);
+			return Array.from(allTools);
 		}
 	};
 }

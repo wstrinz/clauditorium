@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { SDKMessage } from '@anthropic-ai/claude-code';
+	import { toolApprovalStore } from '$lib/stores/tool-approvals';
 	
 	interface Props {
 		sessionId: string;
@@ -10,6 +11,14 @@
 		sessionId,
 		onSessionComplete = $bindable<(sessionId: string) => void>()
 	}: Props = $props();
+	
+	// Store session metadata including initial prompt
+	let sessionMetadata = $state<{
+		prompt?: string;
+		name?: string;
+		workingDirectory?: string;
+		maxTurns?: number;
+	}>({});
 
 	let messages = $state<SDKMessage[]>([]);
 	let isConnected = $state(false);
@@ -208,6 +217,26 @@
 		approved: boolean;
 	}>>(new Map());
 	
+	// Tool approval patterns - remember approvals for similar tool calls
+	let approvedToolPatterns = $state<Set<string>>(new Set());
+	let expandedToolDetails = $state<Set<string>>(new Set());
+	let showAllPendingTools = $state(false);
+	
+	// Subscribe to tool approval store to get reactive updates
+	let toolApprovalSettings = $state($toolApprovalStore);
+	
+	$effect(() => {
+		const unsubscribe = toolApprovalStore.subscribe(value => {
+			console.log('🔄 Tool approval store updated:', {
+				globalTools: Array.from(value.globallyApprovedTools),
+				sessionTools: Array.from(value.sessionApprovedTools)
+			});
+			toolApprovalSettings = value;
+		});
+		
+		return unsubscribe;
+	});
+	
 	function toggleStep(stepId: string) {
 		if (expandedSteps.has(stepId)) {
 			expandedSteps.delete(stepId);
@@ -215,6 +244,104 @@
 			expandedSteps.add(stepId);
 		}
 		expandedSteps = new Set(expandedSteps);
+	}
+
+	function toggleToolDetails(toolUseId: string) {
+		if (expandedToolDetails.has(toolUseId)) {
+			expandedToolDetails.delete(toolUseId);
+		} else {
+			expandedToolDetails.add(toolUseId);
+		}
+		expandedToolDetails = new Set(expandedToolDetails);
+	}
+
+	// Generate a pattern string for a tool call to check for auto-approval
+	function generateToolPattern(toolName: string, input: any): string {
+		// Create a simplified pattern based on tool name and key parameters
+		// This allows for fuzzy matching of similar tool calls
+		const keyParams = Object.keys(input || {}).sort().slice(0, 3); // Use up to 3 key params
+		return `${toolName}:${keyParams.join(',')}`;
+	}
+
+	// Check if a tool call matches an approved pattern
+	function shouldAutoApprove(toolName: string, input: any): boolean {
+		const pattern = generateToolPattern(toolName, input);
+		
+		console.log('🔍 Tool approval check:', {
+			toolName,
+			pattern,
+			globalTools: Array.from(toolApprovalSettings.globallyApprovedTools),
+			sessionTools: Array.from(toolApprovalSettings.sessionApprovedTools),
+			globalPatterns: Array.from(toolApprovalSettings.globallyApprovedPatterns),
+			sessionPatterns: Array.from(toolApprovalSettings.sessionApprovedPatterns)
+		});
+		
+		// Check global tool approval first
+		if (toolApprovalSettings.globallyApprovedTools.has(toolName)) {
+			console.log('✅ Auto-approved via global tool:', toolName);
+			return true;
+		}
+		
+		// Check session tool approval
+		if (toolApprovalSettings.sessionApprovedTools.has(toolName)) {
+			console.log('✅ Auto-approved via session tool:', toolName);
+			return true;
+		}
+		
+		// Check pattern approvals
+		if (toolApprovalSettings.globallyApprovedPatterns.has(pattern) || 
+			toolApprovalSettings.sessionApprovedPatterns.has(pattern)) {
+			console.log('✅ Auto-approved via pattern:', pattern);
+			return true;
+		}
+		
+		// Check local session patterns (legacy)
+		if (approvedToolPatterns.has(pattern) || approvedToolPatterns.has(toolName)) {
+			console.log('✅ Auto-approved via legacy pattern:', pattern, toolName);
+			return true;
+		}
+		
+		console.log('❌ Manual approval required for:', toolName);
+		return false;
+	}
+
+	// Format tool input with proper handling of long strings and newlines
+	function formatToolInput(input: any): string {
+		if (!input || typeof input !== 'object') {
+			return String(input || '');
+		}
+
+		const formatted = Object.entries(input).map(([key, value]) => {
+			let valueStr = String(value);
+			
+			// Handle long strings by truncating and showing preview
+			if (valueStr.length > 100) {
+				valueStr = valueStr.substring(0, 100) + '... (truncated)';
+			}
+			
+			// Replace literal \n with actual newlines for better display
+			valueStr = valueStr.replace(/\\n/g, '\n');
+			
+			return `${key}: ${valueStr}`;
+		}).join('\n');
+
+		return formatted;
+	}
+
+	// Generate a summary of tool input for compact display
+	function getToolInputSummary(input: any): string {
+		if (!input || typeof input !== 'object') {
+			const str = String(input || '');
+			return str.length > 50 ? str.substring(0, 50) + '...' : str;
+		}
+
+		const keys = Object.keys(input);
+		if (keys.length === 0) return 'No parameters';
+		if (keys.length === 1) {
+			const value = String(input[keys[0]]);
+			return `${keys[0]}: ${value.length > 30 ? value.substring(0, 30) + '...' : value}`;
+		}
+		return `${keys.length} parameters: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}`;
 	}
 	
 	async function sendMessage() {
@@ -269,17 +396,48 @@
 			const assistantMsg = message as any;
 			if (assistantMsg.message?.content) {
 				const toolUses = assistantMsg.message.content.filter((c: any) => c.type === 'tool_use');
+				console.log('📥 Extracted tool uses from message:', toolUses.map((t: any) => ({ name: t.name, id: t.id })));
+				
 				let hasNewTools = false;
 				for (const toolUse of toolUses) {
 					if (!pendingToolApprovals.has(toolUse.id)) {
+						console.log('🔄 Processing new tool request:', toolUse.name, toolUse.id);
+						
+						// First, discover and auto-approve new tools
+						const wasNewlyDiscovered = toolApprovalStore.discoverAndAutoApproveTool(toolUse.name);
+						
+						// Check if this tool should be auto-approved (re-check after discovery)
+						const autoApprove = shouldAutoApprove(toolUse.name, toolUse.input);
+						
+						if (wasNewlyDiscovered && autoApprove) {
+							console.log('🎉 Newly discovered tool is now auto-approved:', toolUse.name);
+						}
+						
 						pendingToolApprovals.set(toolUse.id, {
 							toolUseId: toolUse.id,
 							toolName: toolUse.name,
 							input: toolUse.input,
 							message: assistantMsg,
-							approved: false
+							approved: autoApprove
 						});
 						hasNewTools = true;
+						
+						// If auto-approved, send approval immediately
+						if (autoApprove) {
+							console.log('⚡ Auto-approving tool immediately:', toolUse.name);
+							// Use microtask to ensure the pending approval is set first
+							Promise.resolve().then(() => {
+								if (pendingToolApprovals.has(toolUse.id)) {
+									approveToolUse(toolUse.id);
+								} else {
+									console.log('⚠️ Tool approval was already processed:', toolUse.name);
+								}
+							});
+						} else {
+							console.log('⏸️ Tool requires manual approval:', toolUse.name);
+						}
+					} else {
+						console.log('🔄 Tool already in pending approvals:', toolUse.name);
 					}
 				}
 				// Only update the map reference if we actually added something new
@@ -293,6 +451,7 @@
 	async function approveToolUse(toolUseId: string) {
 		const approval = pendingToolApprovals.get(toolUseId);
 		if (approval) {
+			console.log('🚀 Approving tool use:', toolUseId, approval.toolName);
 			approval.approved = true;
 			
 			// Send approval to backend
@@ -301,7 +460,39 @@
 			// Remove from pending list after successful approval
 			pendingToolApprovals.delete(toolUseId);
 			pendingToolApprovals = new Map(pendingToolApprovals);
+			console.log('✅ Tool approval completed for:', approval.toolName);
+		} else {
+			console.log('❌ No approval found for tool use:', toolUseId);
 		}
+	}
+
+	async function approveToolPattern(toolUseId: string, patternType: 'tool' | 'pattern') {
+		const approval = pendingToolApprovals.get(toolUseId);
+		if (approval) {
+			// Add pattern to approved list (use global store)
+			if (patternType === 'tool') {
+				toolApprovalStore.addSessionTool(approval.toolName);
+			} else {
+				const pattern = generateToolPattern(approval.toolName, approval.input);
+				toolApprovalStore.addSessionPattern(pattern);
+			}
+			
+			// Approve this specific tool use
+			await approveToolUse(toolUseId);
+			
+			// Auto-approve any other pending tools that match this pattern
+			for (const [otherToolId, otherApproval] of pendingToolApprovals) {
+				if (!otherApproval.approved && shouldAutoApprove(otherApproval.toolName, otherApproval.input)) {
+					setTimeout(() => approveToolUse(otherToolId), 50);
+				}
+			}
+		}
+	}
+
+	function clearToolPatterns() {
+		approvedToolPatterns.clear();
+		approvedToolPatterns = new Set(approvedToolPatterns);
+		toolApprovalStore.clearSessionApprovals();
 	}
 	
 	async function denyToolUse(toolUseId: string) {
@@ -362,6 +553,26 @@
 			pendingToolApprovals.clear();
 		}
 	});
+
+	// Fetch session metadata including initial prompt
+	async function fetchSessionMetadata() {
+		if (!sessionId) return;
+		
+		try {
+			const response = await fetch(`/api/sessions/sdk?sessionId=${sessionId}`);
+			if (response.ok) {
+				const data = await response.json();
+				sessionMetadata = {
+					prompt: data.prompt,
+					name: data.name,
+					workingDirectory: data.workingDirectory,
+					maxTurns: data.maxTurns
+				};
+			}
+		} catch (err) {
+			console.error('Failed to fetch session metadata:', err);
+		}
+	}
 
 	// Connect to SSE stream
 	function connect() {
@@ -438,6 +649,11 @@
 
 	// Auto-connect on mount with proper cleanup
 	$effect(() => {
+		// Fetch session metadata when sessionId changes
+		if (sessionId) {
+			fetchSessionMetadata();
+		}
+		
 		// Connect if we have a session and no existing connection
 		// For completed sessions, we'll connect when user sends a message
 		if (sessionId && !eventSource && !isCompleted) {
@@ -614,23 +830,23 @@
 
 	function getMessageTypeColor(type: string): string {
 		switch (type) {
-			case 'system': return 'text-blue-700 bg-blue-100 border-blue-200';
-			case 'assistant': return 'text-green-700 bg-green-100 border-green-200';
-			case 'user': return 'text-amber-700 bg-amber-100 border-amber-200';
-			case 'tool_result': return 'text-orange-700 bg-orange-100 border-orange-200';
-			case 'result': return 'text-purple-700 bg-purple-100 border-purple-200';
-			default: return 'text-gray-700 bg-gray-100 border-gray-200';
+			case 'system': return 'text-blue-600 bg-blue-500/20 border-blue-500/30';
+			case 'assistant': return 'text-green-600 bg-green-500/20 border-green-500/30';
+			case 'user': return 'text-amber-600 bg-amber-500/20 border-amber-500/30';
+			case 'tool_result': return 'text-orange-600 bg-orange-500/20 border-orange-500/30';
+			case 'result': return 'text-purple-600 bg-purple-500/20 border-purple-500/30';
+			default: return 'text-gray-600 bg-gray-500/20 border-gray-500/30';
 		}
 	}
 
 	function getMessageBgColor(type: string): string {
 		switch (type) {
-			case 'system': return 'bg-blue-50 border-blue-200';
-			case 'assistant': return 'bg-green-50 border-green-200';
-			case 'user': return 'bg-amber-50 border-amber-200';
-			case 'tool_result': return 'bg-orange-50 border-orange-200';
-			case 'result': return 'bg-purple-50 border-purple-200';
-			default: return 'bg-gray-50 border-gray-200';
+			case 'system': return 'bg-blue-500/10 border-blue-500/30';
+			case 'assistant': return 'bg-green-500/10 border-green-500/30';
+			case 'user': return 'bg-amber-500/10 border-amber-500/30';
+			case 'tool_result': return 'bg-orange-500/10 border-orange-500/30';
+			case 'result': return 'bg-purple-500/10 border-purple-500/30';
+			default: return 'bg-gray-500/10 border-gray-500/30';
 		}
 	}
 </script>
@@ -642,14 +858,68 @@
 		</div>
 	</div>
 {:else}
-	<div class="sdk-session flex flex-col h-full bg-base-100">
+	<div class="sdk-session flex flex-col h-full bg-base-200">
 	<!-- Header -->
-	<div class="flex items-center justify-between p-4 border-b border-base-300 bg-base-100">
-		<div class="flex items-center gap-3">
-			<h2 class="text-lg font-semibold">SDK Session</h2>
-			<div class="badge badge-sm {isConnected ? 'badge-success' : isCompleted ? 'badge-neutral' : 'badge-error'}">
-				{isConnected ? 'Connected' : isCompleted ? 'Completed' : 'Disconnected'}
+	<div class="p-4 border-b border-base-300 bg-base-200">
+		<div class="flex items-center justify-between mb-3">
+			<div class="flex items-center gap-3">
+				<h2 class="text-lg font-semibold">SDK Session</h2>
+				<div class="badge badge-sm {isConnected ? 'badge-success' : isCompleted ? 'badge-neutral' : 'badge-error'}">
+					{isConnected ? 'Connected' : isCompleted ? 'Completed' : 'Disconnected'}
+				</div>
+				{#if sessionMetadata.name}
+					<span class="text-sm text-base-content/60">• {sessionMetadata.name}</span>
+				{/if}
 			</div>
+			
+			<div class="flex items-center gap-2">
+				<button 
+					class="btn btn-xs btn-ghost"
+					onclick={scrollToBottom}
+					title="Scroll to bottom"
+				>
+					↓
+				</button>
+				<label class="label cursor-pointer flex gap-1 text-xs">
+					<input 
+						type="checkbox" 
+						class="checkbox checkbox-xs" 
+						bind:checked={autoScroll}
+						title="Auto-scroll to bottom"
+					/>
+					<span>Auto</span>
+				</label>
+				{#if !isConnected && !isCompleted}
+					<button class="btn btn-sm btn-primary" onclick={reconnect}>
+						Reconnect
+					</button>
+				{/if}
+				{#if isConnected}
+					<button class="btn btn-sm btn-error" onclick={terminateSession}>
+						Terminate
+					</button>
+				{/if}
+			</div>
+		</div>
+		
+		<!-- Initial Prompt Display -->
+		{#if sessionMetadata.prompt}
+			<div class="mb-3 p-3 bg-info/10 border border-info/20 rounded-lg">
+				<div class="flex items-center justify-between mb-2">
+					<span class="text-sm font-medium text-info">📝 Initial Prompt</span>
+					<button 
+						class="btn btn-xs btn-ghost"
+						onclick={() => navigator.clipboard?.writeText(sessionMetadata.prompt || '')}
+						title="Copy prompt to clipboard"
+					>
+						📋 Copy
+					</button>
+				</div>
+				<div class="text-sm text-base-content/80 bg-base-300 rounded p-2 max-h-20 overflow-y-auto">
+					{sessionMetadata.prompt}
+				</div>
+			</div>
+		{/if}
 			
 			<!-- Session Progress Overview -->
 			<div class="flex gap-2 text-sm">
@@ -675,36 +945,6 @@
 					{/if}
 				</div>
 			</div>
-		</div>
-		
-		<div class="flex items-center gap-2">
-			<button 
-				class="btn btn-xs btn-ghost"
-				onclick={scrollToBottom}
-				title="Scroll to bottom"
-			>
-				↓
-			</button>
-			<label class="label cursor-pointer flex gap-1 text-xs">
-				<input 
-					type="checkbox" 
-					class="checkbox checkbox-xs" 
-					bind:checked={autoScroll}
-					title="Auto-scroll to bottom"
-				/>
-				<span>Auto</span>
-			</label>
-			{#if !isConnected && !isCompleted}
-				<button class="btn btn-sm btn-primary" onclick={reconnect}>
-					Reconnect
-				</button>
-			{/if}
-			{#if isConnected}
-				<button class="btn btn-sm btn-error" onclick={terminateSession}>
-					Terminate
-				</button>
-			{/if}
-		</div>
 	</div>
 
 	<!-- Error display -->
@@ -728,13 +968,13 @@
 
 		{#each conversationSteps() as step}
 			{@const isExpanded = step.isExpanded || expandedSteps.has(step.id)}
-			{@const statusColor = step.status === 'in_progress' ? 'border-blue-300 bg-blue-50' : 
-							   step.status === 'pending' ? 'border-orange-300 bg-orange-50' :
-							   step.hasError ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'}
-			<div class="conversation-step border rounded-lg shadow-sm bg-base-100 {statusColor}">
+			{@const statusColor = step.status === 'in_progress' ? 'border-blue-500 bg-blue-500/10' : 
+							   step.status === 'pending' ? 'border-orange-500 bg-orange-500/10' :
+							   step.hasError ? 'border-red-500 bg-red-500/10' : 'border-green-500 bg-green-500/10'}
+			<div class="conversation-step border rounded-lg shadow-sm {statusColor}">
 				<!-- Step Header (Collapsible) -->
 				<button 
-					class="w-full p-3 flex items-center justify-between hover:bg-base-200/50 transition-colors border-b border-base-300"
+					class="w-full p-3 flex items-center justify-between hover:bg-base-300/50 transition-colors border-b border-base-300"
 					onclick={() => toggleStep(step.id)}
 				>
 					<div class="flex items-center gap-3">
@@ -793,7 +1033,7 @@
 							{@const displayType = isToolResultOnly ? 'tool_result' : message.type}
 							<div class="message border-b border-base-200 last:border-b-0">
 								<!-- Message header -->
-								<div class="message-header px-3 py-2 bg-base-50 flex items-center justify-between">
+								<div class="message-header px-3 py-2 bg-base-300/50 flex items-center justify-between">
 									<div class="flex items-center gap-2">
 										<span class="badge text-xs font-mono {getMessageTypeColor(displayType)}">
 											{isToolResultOnly ? 'tool_result' : message.type}
@@ -811,7 +1051,7 @@
 								</div>
 								
 								<!-- Message content -->
-								<div class="message-content p-3 bg-base-100">
+								<div class="message-content p-3 bg-base-200">
 									<pre class="text-sm whitespace-pre-wrap text-base-content leading-relaxed">{formatMessageContent(message)}</pre>
 									
 									{#if message.type === 'assistant' && (message as any).message?.usage}
@@ -841,57 +1081,128 @@
 
 	<!-- Tool Approval Interface (only show if session is not completed) -->
 	{#if pendingToolApprovals.size > 0 && !isCompleted}
-		<div class="border-t border-base-300 bg-warning/10 border-warning/20 max-h-80 flex flex-col">
+		{@const pendingApprovals = Array.from(pendingToolApprovals.values()).filter(a => !a.approved)}
+		{@const mostRecentApproval = pendingApprovals[pendingApprovals.length - 1]}
+		{@const approvalsToShow = showAllPendingTools ? pendingApprovals : (mostRecentApproval ? [mostRecentApproval] : [])}
+		<div class="border-t border-base-300 bg-warning/10 border-warning/20 max-h-96 flex flex-col">
 			<div class="p-4 flex-shrink-0">
-				<div class="alert alert-warning mb-4">
-					<span class="font-semibold">⚠️ Tool Use Approval Required ({pendingToolApprovals.size} pending)</span>
+				<div class="flex items-center justify-between mb-4">
+					<div class="alert alert-warning flex-1">
+						<span class="font-semibold">⚠️ Tool Use Approval Required ({pendingApprovals.length} pending)</span>
+					</div>
+					<div class="flex items-center gap-2">
+						{#if pendingApprovals.length > 1}
+							<button 
+								class="btn btn-sm btn-ghost"
+								onclick={() => showAllPendingTools = !showAllPendingTools}
+								title="{showAllPendingTools ? 'Show only current' : 'Show all pending'}"
+							>
+								{showAllPendingTools ? '👁️ Show Current' : '👁️ Show All'} ({pendingApprovals.length})
+							</button>
+						{/if}
+						{#if approvedToolPatterns.size > 0}
+							<button 
+								class="btn btn-sm btn-outline"
+								onclick={clearToolPatterns}
+								title="Clear all approved patterns"
+							>
+								Clear Patterns ({approvedToolPatterns.size})
+							</button>
+						{/if}
+					</div>
 				</div>
 			</div>
 			
 			<div class="flex-1 overflow-y-auto px-4 pb-4">
-				{#each Array.from(pendingToolApprovals.values()) as approval}
-					{#if !approval.approved}
+				{#each approvalsToShow as approval}
+						{@const isExpanded = expandedToolDetails.has(approval.toolUseId)}
 						<div class="card bg-base-100 shadow-sm border border-warning/30 mb-3">
 							<div class="card-body p-3">
-								<h4 class="card-title text-base flex items-center gap-2">
-									<span class="badge badge-warning badge-sm">TOOL REQUEST</span>
-									<code class="text-sm font-mono">{approval.toolName}</code>
-								</h4>
-								
-								<div class="text-sm mb-3">
-									<strong>Claude wants to use the "{approval.toolName}" tool with these parameters:</strong>
-								</div>
-								
-								<div class="bg-base-200 rounded p-2 mb-3 overflow-x-auto max-h-32 overflow-y-auto">
-									<pre class="text-xs">{JSON.stringify(approval.input, null, 2)}</pre>
-								</div>
-								
-								<div class="card-actions justify-end gap-2">
+								<div class="flex items-start justify-between mb-3">
+									<div class="flex-1">
+										<h4 class="card-title text-base flex items-center gap-2 mb-2">
+											<span class="badge badge-warning badge-sm">TOOL REQUEST</span>
+											<code class="text-sm font-mono">{approval.toolName}</code>
+										</h4>
+										
+										<div class="text-sm text-base-content/70 mb-2">
+											{getToolInputSummary(approval.input)}
+										</div>
+									</div>
+									
 									<button 
-										class="btn btn-outline btn-sm"
-										onclick={() => denyToolUse(approval.toolUseId)}
+										class="btn btn-xs btn-ghost"
+										onclick={() => toggleToolDetails(approval.toolUseId)}
 									>
-										❌ Deny
-									</button>
-									<button 
-										class="btn btn-success btn-sm"
-										onclick={() => approveToolUse(approval.toolUseId)}
-									>
-										✅ Approve
+										{isExpanded ? '🔼' : '🔽'} Details
 									</button>
 								</div>
 								
-								<div class="text-xs text-base-content/60 mt-1">
-									Tool ID: <code>{approval.toolUseId.substring(0, 8)}...</code>
+								{#if isExpanded}
+									<div class="bg-base-300 rounded p-3 mb-3 max-h-48 overflow-y-auto">
+										<div class="text-xs text-base-content/60 mb-2">Full Parameters:</div>
+										<pre class="text-xs whitespace-pre-wrap break-words">{formatToolInput(approval.input)}</pre>
+									</div>
+								{/if}
+								
+								<div class="flex flex-wrap gap-2 justify-between items-center">
+									<div class="flex gap-2">
+										<button 
+											class="btn btn-outline btn-sm"
+											onclick={() => denyToolUse(approval.toolUseId)}
+										>
+											❌ Deny
+										</button>
+										<button 
+											class="btn btn-success btn-sm"
+											onclick={() => approveToolUse(approval.toolUseId)}
+										>
+											✅ Approve Once
+										</button>
+									</div>
+									
+									<div class="flex gap-1">
+										<button 
+											class="btn btn-info btn-sm"
+											onclick={() => approveToolPattern(approval.toolUseId, 'pattern')}
+											title="Approve this tool with similar parameters for this session"
+										>
+											🔁 Pattern
+										</button>
+										<button 
+											class="btn btn-primary btn-sm"
+											onclick={() => approveToolPattern(approval.toolUseId, 'tool')}
+											title="Always approve this tool for this session"
+										>
+											🔧 Always
+										</button>
+									</div>
+								</div>
+								
+								<div class="text-xs text-base-content/60 mt-2 flex justify-between">
+									<span>Tool ID: <code>{approval.toolUseId.substring(0, 8)}...</code></span>
+									{#if shouldAutoApprove(approval.toolName, approval.input)}
+										<span class="badge badge-info badge-xs">Auto-approved pattern</span>
+									{/if}
 								</div>
 							</div>
 						</div>
-					{/if}
 				{/each}
 				
 				{#if Array.from(pendingToolApprovals.values()).every(a => a.approved)}
 					<div class="alert alert-success">
 						<span>✅ All tool requests have been approved. The session will continue automatically.</span>
+					</div>
+				{/if}
+				
+				{#if approvedToolPatterns.size > 0}
+					<div class="mt-4 p-3 bg-info/10 rounded border border-info/20">
+						<div class="text-sm font-medium mb-2">📋 Approved Patterns for this session:</div>
+						<div class="flex flex-wrap gap-1">
+							{#each Array.from(approvedToolPatterns) as pattern}
+								<span class="badge badge-info badge-sm">{pattern}</span>
+							{/each}
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -963,7 +1274,7 @@
 
 <style>
 	.sdk-session {
-		background-color: #fafafa;
+		/* Use DaisyUI theme colors instead of hardcoded light background */
 	}
 	
 	.message {

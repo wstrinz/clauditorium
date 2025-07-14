@@ -2,6 +2,20 @@ import { query, type SDKMessage } from '@anthropic-ai/claude-code';
 import { activeSdkSessions, type ActiveSdkSession } from './sdk-sessions';
 import * as sessionDb from './session-db';
 
+// Helper function to get allowed tools for SDK sessions
+function getAllowedTools(): string[] {
+	// For server-side usage, we'll maintain a comprehensive list of common tools
+	// This ensures SDK sessions work reliably without depending on browser localStorage
+	return [
+		'Read', 'Write', 'Edit', 'MultiEdit', 
+		'Bash', 'Glob', 'Grep', 'LS', 'Task',
+		'WebFetch', 'WebSearch', 'TodoRead', 'TodoWrite',
+		'NotebookRead', 'NotebookEdit',
+		// Add any other commonly used tools
+		'exit_plan_mode'
+	];
+}
+
 export class SdkSessionManager {
 	/**
 	 * Start a new SDK session or continue an existing one
@@ -141,13 +155,16 @@ export class SdkSessionManager {
 				session.messages = [];
 			}
 			
-			// Create the query generator
+			// Get allowed tools for this session
+			const allowedTools = getAllowedTools();
+			
+			// Create the query generator with granular tool permissions
 			const generator = query({
 				prompt,
 				abortController: session.abortController,
 				options: {
 					maxTurns: options.maxTurns,
-					permissionMode: 'bypassPermissions', // Skip permission prompts entirely
+					allowedTools, // Use granular tool allowlist instead of bypassPermissions
 					...(options.continue ? { continue: true } : {}),
 					...(options.resume ? { resume: options.resume } : {})
 				}
