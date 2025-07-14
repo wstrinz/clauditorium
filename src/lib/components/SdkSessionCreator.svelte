@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { toolApprovalStore, COMMON_TOOLS, type ToolName } from '$lib/stores/tool-approvals';
+	import DirectoryPickerNew from './DirectoryPickerNew.svelte';
 
 	interface Props {
 		onSessionCreated?: (sessionId: string) => void;
@@ -198,16 +199,10 @@
 
 				<!-- Working directory -->
 				<div class="form-control">
-					<label class="label" for="workingDirectory">
+					<label class="label">
 						<span class="label-text">Working Directory</span>
 					</label>
-					<input 
-						id="workingDirectory"
-						type="text"
-						class="input input-bordered"
-						placeholder="Leave empty for default (current directory)"
-						bind:value={workingDirectory}
-					/>
+					<DirectoryPickerNew bind:selectedDirectory={workingDirectory} />
 					<label class="label">
 						<span class="label-text-alt">Directory where Claude will work</span>
 					</label>

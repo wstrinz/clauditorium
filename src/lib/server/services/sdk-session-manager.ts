@@ -165,6 +165,7 @@ export class SdkSessionManager {
 				options: {
 					maxTurns: options.maxTurns,
 					allowedTools, // Use granular tool allowlist instead of bypassPermissions
+					cwd: session.workingDirectory, // Pass the working directory as cwd
 					...(options.continue ? { continue: true } : {}),
 					...(options.resume ? { resume: options.resume } : {})
 				}
