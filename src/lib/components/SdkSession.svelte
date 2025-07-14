@@ -48,7 +48,26 @@
 		let currentStep: SDKMessage[] = [];
 		let stepId = 0;
 		
-		for (const message of messages) {
+		// If we have an initial prompt and no messages yet, or if the first message isn't a user message with the prompt,
+		// add the initial prompt as the first user message
+		let messagesToProcess = [...messages];
+		if (sessionMetadata.prompt && 
+			(messages.length === 0 || 
+			 messages[0].type !== 'user' || 
+			 !(messages[0] as any).message?.content?.[0]?.text?.includes(sessionMetadata.prompt))) {
+			
+			const initialPromptMessage: SDKMessage = {
+				type: 'user',
+				message: {
+					content: [{ type: 'text', text: sessionMetadata.prompt }]
+				},
+				parent_tool_use_id: null,
+				session_id: 'initial-prompt'
+			} as unknown as SDKMessage;
+			messagesToProcess = [initialPromptMessage, ...messages];
+		}
+		
+		for (const message of messagesToProcess) {
 			// Enhanced turn detection - group tool request/result pairs together
 			const shouldStartNewStep = 
 				message.type === 'system' ||
@@ -245,6 +264,22 @@
 		}
 		expandedSteps = new Set(expandedSteps);
 	}
+	
+	// Initialize expanded steps based on initial state (only on first load)
+	let hasInitializedExpansion = $state(false);
+	$effect(() => {
+		if (!hasInitializedExpansion) {
+			const steps = conversationSteps();
+			const initiallyExpanded = new Set<string>();
+			for (const step of steps) {
+				if (step.isExpanded) {
+					initiallyExpanded.add(step.id);
+				}
+			}
+			expandedSteps = initiallyExpanded;
+			hasInitializedExpansion = true;
+		}
+	});
 
 	function toggleToolDetails(toolUseId: string) {
 		if (expandedToolDetails.has(toolUseId)) {
@@ -902,24 +937,6 @@
 			</div>
 		</div>
 		
-		<!-- Initial Prompt Display -->
-		{#if sessionMetadata.prompt}
-			<div class="mb-3 p-3 bg-info/10 border border-info/20 rounded-lg">
-				<div class="flex items-center justify-between mb-2">
-					<span class="text-sm font-medium text-info">📝 Initial Prompt</span>
-					<button 
-						class="btn btn-xs btn-ghost"
-						onclick={() => navigator.clipboard?.writeText(sessionMetadata.prompt || '')}
-						title="Copy prompt to clipboard"
-					>
-						📋 Copy
-					</button>
-				</div>
-				<div class="text-sm text-base-content/80 bg-base-300 rounded p-2 max-h-20 overflow-y-auto">
-					{sessionMetadata.prompt}
-				</div>
-			</div>
-		{/if}
 			
 			<!-- Session Progress Overview -->
 			<div class="flex gap-2 text-sm">
@@ -967,7 +984,7 @@
 		{/if}
 
 		{#each conversationSteps() as step}
-			{@const isExpanded = step.isExpanded || expandedSteps.has(step.id)}
+			{@const isExpanded = expandedSteps.has(step.id)}
 			{@const statusColor = step.status === 'in_progress' ? 'border-blue-500 bg-blue-500/10' : 
 							   step.status === 'pending' ? 'border-orange-500 bg-orange-500/10' :
 							   step.hasError ? 'border-red-500 bg-red-500/10' : 'border-green-500 bg-green-500/10'}

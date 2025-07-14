@@ -106,6 +106,30 @@ export class SdkSessionManager {
 			console.error('Failed to update session status for continuation:', error);
 		}
 		
+		// Add the user's new message to the session before continuing
+		// This ensures the user's input is preserved in the conversation
+		const userMessage: SDKMessage = {
+			type: 'user',
+			message: {
+				content: [{ type: 'text', text: message }]
+			},
+			parent_tool_use_id: null,
+			session_id: session.claudeSessionId || 'continuation'
+		} as unknown as SDKMessage;
+		session.messages.push(userMessage);
+		
+		// Save the user message to database
+		try {
+			await sessionDb.addSessionHistory({
+				sessionId: session.sessionId,
+				timestamp: new Date(),
+				type: 'input',
+				content: JSON.stringify(userMessage)
+			});
+		} catch (error) {
+			console.error('Failed to save user message to database:', error);
+		}
+		
 		// Create a new query with the resume parameter to continue from where we left off
 		this.runQuery(session, message, { 
 			resume: session.claudeSessionId 
@@ -147,12 +171,11 @@ export class SdkSessionManager {
 		options: { maxTurns?: number; continue?: boolean; resume?: string } = {}
 	): Promise<void> {
 		try {
-			// When resuming, we clear existing messages to avoid duplication
-			// The SDK will regenerate the full conversation context including previous messages
+			// When resuming, we don't need to clear messages since they're already part of the conversation
+			// The SDK will handle the conversation continuation properly
 			const isResume = !!options.resume;
 			if (isResume) {
-				console.log('Resuming session - clearing previous messages to avoid duplication');
-				session.messages = [];
+				console.log('Resuming session - preserving existing conversation context');
 			}
 			
 			// Get allowed tools for this session
