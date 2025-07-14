@@ -36,7 +36,7 @@
 			messages: SDKMessage[];
 			isExpanded: boolean;
 			summary: string;
-			type: 'system' | 'conversation' | 'tool_execution' | 'result';
+			type: 'system' | 'conversation' | 'tool_execution' | 'result' | 'user_message' | 'assistant_response';
 			status: 'completed' | 'in_progress' | 'pending';
 			startTime: Date | null;
 			endTime: Date | null;
@@ -68,15 +68,18 @@
 		}
 		
 		for (const message of messagesToProcess) {
-			// Enhanced turn detection - group tool request/result pairs together
+			// Improved turn detection for better conversation flow
 			const shouldStartNewStep = 
 				message.type === 'system' ||
 				message.type === 'result' ||
+				// Always start new step for user messages (except tool results)
+				(message.type === 'user' && !isToolResultForPreviousRequest(message, currentStep)) ||
+				// Start new step when switching from user to assistant (new Claude response)
 				(currentStep.length > 0 && 
-				 currentStep[currentStep.length - 1].type === 'assistant' && 
-				 message.type === 'user' &&
-				 // Don't split if this user message is a tool result for previous assistant tool request
-				 !isToolResultForPreviousRequest(message, currentStep));
+				 currentStep[currentStep.length - 1].type === 'user' && 
+				 message.type === 'assistant' &&
+				 // But not if the user message was just tool results
+				 !isToolResultForPreviousRequest(currentStep[currentStep.length - 1], currentStep.slice(0, -1)));
 			
 			if (shouldStartNewStep && currentStep.length > 0) {
 				// Finish current step
@@ -113,10 +116,25 @@
 			steps[i].isExpanded = determineInitialExpansion(i, steps[i].type, isConnected, totalSteps);
 		}
 		
-		// Mark last conversation step as in progress if session is connected
-		if (isConnected && steps.length > 0) {
+		// Mark last step as in progress if session is connected and active
+		console.log('🔍 Session state check:', {
+			isConnected,
+			isCompleted,
+			stepsCount: steps.length,
+			lastStepType: steps.length > 0 ? steps[steps.length - 1].type : 'none',
+			lastStepStatus: steps.length > 0 ? steps[steps.length - 1].status : 'none'
+		});
+		
+		if (isConnected && steps.length > 0 && !isCompleted) {
 			const lastStep = steps[steps.length - 1];
-			if (lastStep.type === 'conversation' && !isCompleted) {
+			console.log('🔍 Checking last step for in_progress:', {
+				stepType: lastStep.type,
+				currentStatus: lastStep.status,
+				shouldMarkInProgress: lastStep.type === 'conversation' || lastStep.type === 'assistant_response'
+			});
+			// Mark as in progress if it's a conversation or assistant response
+			if (lastStep.type === 'conversation' || lastStep.type === 'assistant_response') {
+				console.log('✅ Marking last step as in_progress');
 				lastStep.status = 'in_progress';
 			}
 		}
@@ -158,9 +176,20 @@
 		).length;
 		
 		// Determine step type
-		let type: 'system' | 'conversation' | 'tool_execution' | 'result';
+		let type: 'system' | 'conversation' | 'tool_execution' | 'result' | 'user_message' | 'assistant_response';
 		let summary: string;
 		let status: 'completed' | 'in_progress' | 'pending';
+		
+		// Debug logging for step analysis
+		console.log('🔍 Analyzing step:', {
+			firstMessageType: firstMessage.type,
+			messageTypes: messages.map(m => m.type),
+			userMsgs,
+			assistantMsgs,
+			toolRequests,
+			toolResults,
+			messageCount: messages.length
+		});
 		
 		if (firstMessage.type === 'system') {
 			type = 'system';
@@ -170,16 +199,56 @@
 			type = 'result';
 			summary = '🏁 Session completed';
 			status = 'completed';
-		} else if (toolRequests > 0 || toolResults > 0) {
-			type = 'tool_execution';
-			summary = `🛠️ Tool execution (${Math.max(toolRequests, toolResults)} tool${Math.max(toolRequests, toolResults) !== 1 ? 's' : ''})`;
-			// Check if step is still in progress (has tool requests but no results, or has pending approvals)
-			status = toolRequests > toolResults || pendingToolApprovals.size > 0 ? 'in_progress' : 'completed';
+		} else if (userMsgs > 0 && assistantMsgs === 0) {
+			// Pure user message step
+			type = 'user_message';
+			const userMessage = messages.find(m => m.type === 'user');
+			const messageText = (userMessage as any)?.message?.content?.[0]?.text || '';
+			const preview = messageText.length > 50 ? messageText.substring(0, 50) + '...' : messageText;
+			summary = `💬 ${preview}`;
+			status = 'completed';
+		} else if (assistantMsgs > 0) {
+			// Assistant response (may include tools)
+			type = 'assistant_response';
+			if (toolRequests > 0) {
+				summary = `🤖 Claude response with ${toolRequests} tool${toolRequests !== 1 ? 's' : ''}`;
+				// More sophisticated status detection
+				// Check if we have outstanding tool calls without results
+				let hasOutstandingTools = false;
+				const lastAssistantMsg = messages.filter(m => m.type === 'assistant').pop();
+				if (lastAssistantMsg && (lastAssistantMsg as any).message?.content) {
+					const lastToolUses = (lastAssistantMsg as any).message.content.filter((c: any) => c.type === 'tool_use');
+					if (lastToolUses.length > 0) {
+						// Check if we have tool results for these tool uses
+						const toolUseIds = lastToolUses.map((t: any) => t.id);
+						const subsequentMessages = messages.slice(messages.indexOf(lastAssistantMsg) + 1);
+						const resultIds = subsequentMessages.flatMap(m => 
+							(m as any).message?.content?.filter((c: any) => c.type === 'tool_result')?.map((c: any) => c.tool_use_id) || []
+						);
+						hasOutstandingTools = toolUseIds.some((id: string) => !resultIds.includes(id));
+					}
+				}
+				status = hasOutstandingTools || pendingToolApprovals.size > 0 ? 'in_progress' : 'completed';
+				// Debug logging for status detection
+				if (toolRequests > 0) {
+					console.log('🔍 Step status debug:', {
+						hasOutstandingTools,
+						pendingToolApprovals: pendingToolApprovals.size,
+						toolRequests,
+						toolResults,
+						finalStatus: status,
+						stepSummary: summary
+					});
+				}
+			} else {
+				summary = `🤖 Claude response`;
+				status = 'completed';
+			}
 		} else {
+			// Fallback for other types
 			type = 'conversation';
-			summary = `💬 Conversation (${assistantMsgs} response${assistantMsgs !== 1 ? 's' : ''})`;
-			// Mark as in progress if it's the last message group and session is connected
-			status = 'completed'; // Default to completed, will be updated for the last step if needed
+			summary = `💬 Conversation (${messages.length} message${messages.length !== 1 ? 's' : ''})`;
+			status = 'completed';
 		}
 		
 		// Check for errors
@@ -201,12 +270,23 @@
 		// Always expand system initialization and results
 		if (stepType === 'system' || stepType === 'result') return true;
 		
-		// For active sessions, only show current and previous step
+		// Always expand user messages
+		if (stepType === 'user_message') return true;
+		
+		// For assistant responses, show different amounts based on connection status
+		if (stepType === 'assistant_response') {
+			// For active sessions, only show current and previous step
+			if (isConnected) {
+				return stepIndex >= Math.max(0, totalSteps - 2);
+			}
+			// For completed sessions, show last 3 steps
+			return stepIndex >= Math.max(0, totalSteps - 3);
+		}
+		
+		// For other types, use the original logic
 		if (isConnected) {
 			return stepIndex >= Math.max(0, totalSteps - 2);
 		}
-		
-		// For completed sessions, show last 3 steps
 		return stepIndex >= Math.max(0, totalSteps - 3);
 	}
 
@@ -217,11 +297,31 @@
 		const inProgressSteps = steps.filter(s => s.status === 'in_progress').length;
 		const totalDuration = steps.reduce((acc, s) => acc + (s.duration || 0), 0);
 		
+		// Calculate total token usage
+		let totalInputTokens = 0;
+		let totalOutputTokens = 0;
+		let totalCacheTokens = 0;
+		
+		messages.forEach(message => {
+			if (message.type === 'assistant' && (message as any).message?.usage) {
+				const usage = (message as any).message.usage;
+				totalInputTokens += usage.input_tokens || 0;
+				totalOutputTokens += usage.output_tokens || 0;
+				totalCacheTokens += usage.cache_creation_input_tokens || 0;
+			}
+		});
+		
 		return {
 			steps,
 			completedSteps,
 			inProgressSteps,
-			totalDuration
+			totalDuration,
+			tokenUsage: {
+				input: totalInputTokens,
+				output: totalOutputTokens,
+				cache: totalCacheTokens,
+				total: totalInputTokens + totalOutputTokens
+			}
 		};
 	});
 	
@@ -884,6 +984,42 @@
 			default: return 'bg-gray-500/10 border-gray-500/30';
 		}
 	}
+
+	// For active assistant response blocks, show only the latest assistant message and latest tool call
+	function getMessagesToShow(step: any, isExpanded: boolean): SDKMessage[] {
+		// Always show all messages if expanded
+		if (isExpanded) {
+			return step.messages;
+		}
+		
+		// For active assistant response blocks that are collapsed, show condensed view
+		if (step.type === 'assistant_response' && step.status === 'in_progress') {
+			const messages = step.messages;
+			
+			// Get the most recent assistant message (text response)
+			const assistantMessages = messages.filter((m: SDKMessage) => 
+				m.type === 'assistant' && (m as any).message?.content?.some((c: any) => c.type === 'text')
+			);
+			const latestAssistant = assistantMessages[assistantMessages.length - 1];
+			
+			// Get the most recent tool call
+			const toolCallMessages = messages.filter((m: SDKMessage) => 
+				m.type === 'assistant' && (m as any).message?.content?.some((c: any) => c.type === 'tool_use')
+			);
+			const latestToolCall = toolCallMessages[toolCallMessages.length - 1];
+			
+			// Collect messages to show, avoiding duplicates
+			const toShow: SDKMessage[] = [];
+			if (latestAssistant) toShow.push(latestAssistant);
+			if (latestToolCall && latestToolCall !== latestAssistant) toShow.push(latestToolCall);
+			
+			// If we have no specific messages, show the last message
+			return toShow.length > 0 ? toShow : [messages[messages.length - 1]];
+		}
+		
+		// For other collapsed types, show all messages (they should be simple)
+		return step.messages;
+	}
 </script>
 
 {#if !sessionId}
@@ -952,6 +1088,16 @@
 					<div class="flex items-center gap-1">
 						<span class="text-base-content/60">Duration:</span>
 						<span class="font-mono">{(sessionProgress().totalDuration / 1000).toFixed(1)}s</span>
+					</div>
+				{/if}
+				
+				{#if sessionProgress().tokenUsage.total > 0}
+					<div class="flex items-center gap-1">
+						<span class="text-base-content/60">Tokens:</span>
+						<span class="font-mono">{sessionProgress().tokenUsage.total.toLocaleString()}</span>
+						<span class="text-xs text-base-content/40">
+							({sessionProgress().tokenUsage.input.toLocaleString()} in, {sessionProgress().tokenUsage.output.toLocaleString()} out{sessionProgress().tokenUsage.cache > 0 ? `, ${sessionProgress().tokenUsage.cache.toLocaleString()} cached` : ''})
+						</span>
 					</div>
 				{/if}
 				
@@ -1043,9 +1189,9 @@
 				</button>
 
 				<!-- Step Content (Collapsible) -->
-				{#if isExpanded}
+				{#if isExpanded || (step.type === 'assistant_response' && step.status === 'in_progress')}
 					<div class="step-content">
-						{#each step.messages as message, index}
+						{#each getMessagesToShow(step, isExpanded) as message, index}
 							{@const isToolResultOnly = message.type === 'user' && (message as any).message?.content?.every((c: any) => c.type === 'tool_result')}
 							{@const displayType = isToolResultOnly ? 'tool_result' : message.type}
 							<div class="message border-b border-base-200 last:border-b-0">
@@ -1096,11 +1242,12 @@
 		{/each}
 	</div>
 
-	<!-- Tool Approval Interface (only show if session is not completed) -->
-	{#if pendingToolApprovals.size > 0 && !isCompleted}
+	<!-- Tool Approval Interface (only show if session is not completed and has unapproved tools) -->
+	{#if !isCompleted}
 		{@const pendingApprovals = Array.from(pendingToolApprovals.values()).filter(a => !a.approved)}
-		{@const mostRecentApproval = pendingApprovals[pendingApprovals.length - 1]}
-		{@const approvalsToShow = showAllPendingTools ? pendingApprovals : (mostRecentApproval ? [mostRecentApproval] : [])}
+		{#if pendingApprovals.length > 0}
+			{@const mostRecentApproval = pendingApprovals[pendingApprovals.length - 1]}
+			{@const approvalsToShow = showAllPendingTools ? pendingApprovals : (mostRecentApproval ? [mostRecentApproval] : [])}
 		<div class="border-t border-base-300 bg-warning/10 border-warning/20 max-h-96 flex flex-col">
 			<div class="p-4 flex-shrink-0">
 				<div class="flex items-center justify-between mb-4">
@@ -1224,6 +1371,7 @@
 				{/if}
 			</div>
 		</div>
+		{/if}
 	{/if}
 
 	<!-- Chat Interface (show for all sessions to allow continuation) -->
