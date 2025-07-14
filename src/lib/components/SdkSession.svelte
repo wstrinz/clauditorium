@@ -68,18 +68,14 @@
 		}
 		
 		for (const message of messagesToProcess) {
-			// Improved turn detection for better conversation flow
+			// Improved turn detection - each message type should start its own logical step
 			const shouldStartNewStep = 
 				message.type === 'system' ||
 				message.type === 'result' ||
 				// Always start new step for user messages (except tool results)
 				(message.type === 'user' && !isToolResultForPreviousRequest(message, currentStep)) ||
-				// Start new step when switching from user to assistant (new Claude response)
-				(currentStep.length > 0 && 
-				 currentStep[currentStep.length - 1].type === 'user' && 
-				 message.type === 'assistant' &&
-				 // But not if the user message was just tool results
-				 !isToolResultForPreviousRequest(currentStep[currentStep.length - 1], currentStep.slice(0, -1)));
+				// Start new step for assistant messages unless continuing tool sequence
+				(message.type === 'assistant' && !isContinuingToolSequence(message, currentStep));
 			
 			if (shouldStartNewStep && currentStep.length > 0) {
 				// Finish current step
@@ -117,24 +113,10 @@
 		}
 		
 		// Mark last step as in progress if session is connected and active
-		console.log('🔍 Session state check:', {
-			isConnected,
-			isCompleted,
-			stepsCount: steps.length,
-			lastStepType: steps.length > 0 ? steps[steps.length - 1].type : 'none',
-			lastStepStatus: steps.length > 0 ? steps[steps.length - 1].status : 'none'
-		});
-		
 		if (isConnected && steps.length > 0 && !isCompleted) {
 			const lastStep = steps[steps.length - 1];
-			console.log('🔍 Checking last step for in_progress:', {
-				stepType: lastStep.type,
-				currentStatus: lastStep.status,
-				shouldMarkInProgress: lastStep.type === 'conversation' || lastStep.type === 'assistant_response'
-			});
 			// Mark as in progress if it's a conversation or assistant response
 			if (lastStep.type === 'conversation' || lastStep.type === 'assistant_response') {
-				console.log('✅ Marking last step as in_progress');
 				lastStep.status = 'in_progress';
 			}
 		}
@@ -154,6 +136,28 @@
 		if (!lastAssistantMsg?.message?.content) return false;
 		
 		return lastAssistantMsg.message.content.some((c: any) => c.type === 'tool_use');
+	}
+
+	function isContinuingToolSequence(message: SDKMessage, currentStep: SDKMessage[]): boolean {
+		if (message.type !== 'assistant') return false;
+		if (currentStep.length === 0) return false;
+		
+		// If current step has system messages, don't continue (start new assistant step)
+		if (currentStep.some(m => m.type === 'system')) return false;
+		
+		// If current step already has assistant messages, group tool-related ones together
+		const hasAssistantInStep = currentStep.some(m => m.type === 'assistant');
+		if (hasAssistantInStep) {
+			// Continue if this is part of a tool execution sequence
+			const assistantMsg = message as any;
+			const hasToolUse = assistantMsg.message?.content?.some((c: any) => c.type === 'tool_use');
+			const hasText = assistantMsg.message?.content?.some((c: any) => c.type === 'text');
+			
+			// Continue tool sequence: tool calls or immediate responses to tool results
+			return hasToolUse || (!hasText && currentStep.some(m => m.type === 'user'));
+		}
+		
+		return false;
 	}
 
 	function analyzeStep(messages: SDKMessage[]) {
@@ -180,16 +184,6 @@
 		let summary: string;
 		let status: 'completed' | 'in_progress' | 'pending';
 		
-		// Debug logging for step analysis
-		console.log('🔍 Analyzing step:', {
-			firstMessageType: firstMessage.type,
-			messageTypes: messages.map(m => m.type),
-			userMsgs,
-			assistantMsgs,
-			toolRequests,
-			toolResults,
-			messageCount: messages.length
-		});
 		
 		if (firstMessage.type === 'system') {
 			type = 'system';
@@ -229,17 +223,6 @@
 					}
 				}
 				status = hasOutstandingTools || pendingToolApprovals.size > 0 ? 'in_progress' : 'completed';
-				// Debug logging for status detection
-				if (toolRequests > 0) {
-					console.log('🔍 Step status debug:', {
-						hasOutstandingTools,
-						pendingToolApprovals: pendingToolApprovals.size,
-						toolRequests,
-						toolResults,
-						finalStatus: status,
-						stepSummary: summary
-					});
-				}
 			} else {
 				summary = `🤖 Claude response`;
 				status = 'completed';
@@ -346,10 +329,6 @@
 	
 	$effect(() => {
 		const unsubscribe = toolApprovalStore.subscribe(value => {
-			console.log('🔄 Tool approval store updated:', {
-				globalTools: Array.from(value.globallyApprovedTools),
-				sessionTools: Array.from(value.sessionApprovedTools)
-			});
 			toolApprovalSettings = value;
 		});
 		
@@ -402,41 +381,27 @@
 	function shouldAutoApprove(toolName: string, input: any): boolean {
 		const pattern = generateToolPattern(toolName, input);
 		
-		console.log('🔍 Tool approval check:', {
-			toolName,
-			pattern,
-			globalTools: Array.from(toolApprovalSettings.globallyApprovedTools),
-			sessionTools: Array.from(toolApprovalSettings.sessionApprovedTools),
-			globalPatterns: Array.from(toolApprovalSettings.globallyApprovedPatterns),
-			sessionPatterns: Array.from(toolApprovalSettings.sessionApprovedPatterns)
-		});
-		
 		// Check global tool approval first
 		if (toolApprovalSettings.globallyApprovedTools.has(toolName)) {
-			console.log('✅ Auto-approved via global tool:', toolName);
 			return true;
 		}
 		
 		// Check session tool approval
 		if (toolApprovalSettings.sessionApprovedTools.has(toolName)) {
-			console.log('✅ Auto-approved via session tool:', toolName);
 			return true;
 		}
 		
 		// Check pattern approvals
 		if (toolApprovalSettings.globallyApprovedPatterns.has(pattern) || 
 			toolApprovalSettings.sessionApprovedPatterns.has(pattern)) {
-			console.log('✅ Auto-approved via pattern:', pattern);
 			return true;
 		}
 		
 		// Check local session patterns (legacy)
 		if (approvedToolPatterns.has(pattern) || approvedToolPatterns.has(toolName)) {
-			console.log('✅ Auto-approved via legacy pattern:', pattern, toolName);
 			return true;
 		}
 		
-		console.log('❌ Manual approval required for:', toolName);
 		return false;
 	}
 
@@ -531,22 +496,15 @@
 			const assistantMsg = message as any;
 			if (assistantMsg.message?.content) {
 				const toolUses = assistantMsg.message.content.filter((c: any) => c.type === 'tool_use');
-				console.log('📥 Extracted tool uses from message:', toolUses.map((t: any) => ({ name: t.name, id: t.id })));
 				
 				let hasNewTools = false;
 				for (const toolUse of toolUses) {
 					if (!pendingToolApprovals.has(toolUse.id)) {
-						console.log('🔄 Processing new tool request:', toolUse.name, toolUse.id);
-						
 						// First, discover and auto-approve new tools
 						const wasNewlyDiscovered = toolApprovalStore.discoverAndAutoApproveTool(toolUse.name);
 						
 						// Check if this tool should be auto-approved (re-check after discovery)
 						const autoApprove = shouldAutoApprove(toolUse.name, toolUse.input);
-						
-						if (wasNewlyDiscovered && autoApprove) {
-							console.log('🎉 Newly discovered tool is now auto-approved:', toolUse.name);
-						}
 						
 						pendingToolApprovals.set(toolUse.id, {
 							toolUseId: toolUse.id,
@@ -559,20 +517,13 @@
 						
 						// If auto-approved, send approval immediately
 						if (autoApprove) {
-							console.log('⚡ Auto-approving tool immediately:', toolUse.name);
 							// Use microtask to ensure the pending approval is set first
 							Promise.resolve().then(() => {
 								if (pendingToolApprovals.has(toolUse.id)) {
 									approveToolUse(toolUse.id);
-								} else {
-									console.log('⚠️ Tool approval was already processed:', toolUse.name);
 								}
 							});
-						} else {
-							console.log('⏸️ Tool requires manual approval:', toolUse.name);
 						}
-					} else {
-						console.log('🔄 Tool already in pending approvals:', toolUse.name);
 					}
 				}
 				// Only update the map reference if we actually added something new
@@ -586,7 +537,6 @@
 	async function approveToolUse(toolUseId: string) {
 		const approval = pendingToolApprovals.get(toolUseId);
 		if (approval) {
-			console.log('🚀 Approving tool use:', toolUseId, approval.toolName);
 			approval.approved = true;
 			
 			// Send approval to backend
@@ -595,9 +545,6 @@
 			// Remove from pending list after successful approval
 			pendingToolApprovals.delete(toolUseId);
 			pendingToolApprovals = new Map(pendingToolApprovals);
-			console.log('✅ Tool approval completed for:', approval.toolName);
-		} else {
-			console.log('❌ No approval found for tool use:', toolUseId);
 		}
 	}
 
@@ -665,7 +612,6 @@
 				throw new Error(`Failed to send tool approvals: ${response.statusText}`);
 			}
 			
-			console.log('Tool approvals sent successfully');
 		} catch (err) {
 			console.error('Failed to send tool approvals:', err);
 			error = 'Failed to send tool approvals';
@@ -725,11 +671,9 @@
 			}
 
 			const url = `/api/sessions/sdk/${sessionId}/stream`;
-			console.log('Connecting to SDK session:', url);
 			eventSource = new EventSource(url);
 			
 			eventSource.onopen = () => {
-				console.log('SSE connection opened');
 				isConnected = true;
 				error = null;
 			};
@@ -740,7 +684,6 @@
 					
 					switch (data.type) {
 						case 'connected':
-							console.log('Connected to SDK session:', data.sessionId);
 							break;
 						case 'sdk_message':
 							messages = [...messages, data.data];
