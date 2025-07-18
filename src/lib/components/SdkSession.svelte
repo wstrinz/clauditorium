@@ -313,6 +313,11 @@
 	let expandedSteps = $state<Set<string>>(new Set());
 	let chatInput = $state('');
 	let isSending = $state(false);
+	let sendStatus = $state<'idle' | 'sending' | 'sent' | 'error'>('idle');
+	let lastSentMessage = $state<string | null>(null);
+	let sendError = $state<string | null>(null);
+	let retryCount = $state(0);
+	let sendTimeout: ReturnType<typeof setTimeout> | null = null;
 	let pendingToolApprovals = $state<Map<string, {
 		toolUseId: string;
 		toolName: string;
@@ -505,12 +510,27 @@
 		return `${keys.length} parameters: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}`;
 	}
 	
-	async function sendMessage() {
+	async function sendMessage(isRetry = false) {
 		if (!chatInput.trim() || isSending || !sessionId) return;
 		
 		const message = chatInput.trim();
-		chatInput = '';
+		
+		// Clear any existing timeout
+		if (sendTimeout) {
+			clearTimeout(sendTimeout);
+			sendTimeout = null;
+		}
+		
+		// Only clear input and update status if not a retry
+		if (!isRetry) {
+			chatInput = '';
+			lastSentMessage = message;
+			retryCount = 0;
+			sendError = null;
+		}
+		
 		isSending = true;
+		sendStatus = 'sending';
 		
 		try {
 			// If session is completed, we need to reconnect to SSE first
@@ -518,30 +538,106 @@
 				connect();
 			}
 			
+			// Set a timeout to show feedback even if request is slow
+			sendTimeout = setTimeout(() => {
+				if (sendStatus === 'sending') {
+					sendStatus = 'sent'; // Show as sent even if still waiting
+				}
+			}, 500);
+			
+			const controller = new AbortController();
+			const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+			
 			const response = await fetch(`/api/sessions/sdk/${sessionId}/message`, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json'
 				},
-				body: JSON.stringify({ message })
+				body: JSON.stringify({ message }),
+				signal: controller.signal
 			});
+			
+			clearTimeout(timeoutId);
 			
 			if (!response.ok) {
 				const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-				throw new Error(`Failed to send message: ${response.statusText} - ${errorData.error || errorData.details || ''}`);
+				throw new Error(`${response.status === 429 ? 'Rate limited' : 'Failed to send'}: ${errorData.error || errorData.details || response.statusText}`);
+			}
+			
+			// Clear timeout since request completed successfully
+			if (sendTimeout) {
+				clearTimeout(sendTimeout);
+				sendTimeout = null;
 			}
 			
 			// Reset completion status since we're continuing
 			isCompleted = false;
+			sendStatus = 'sent';
+			lastSentMessage = null;
+			sendError = null;
+			retryCount = 0;
 			
-			// Message will be received via SSE stream
+			// Auto-reset status after successful send
+			setTimeout(() => {
+				if (sendStatus === 'sent') {
+					sendStatus = 'idle';
+				}
+			}, 2000);
+			
 		} catch (err) {
 			console.error('Failed to send message:', err);
-			error = 'Failed to send message';
-			chatInput = message; // Restore message on error
+			
+			const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
+			sendError = errorMessage;
+			sendStatus = 'error';
+			
+			// Restore message to input if not already there
+			if (!chatInput.trim()) {
+				chatInput = message;
+			}
+			
+			// Clear error status after some time
+			setTimeout(() => {
+				if (sendStatus === 'error') {
+					sendStatus = 'idle';
+					sendError = null;
+				}
+			}, 5000);
+			
 		} finally {
 			isSending = false;
+			
+			// Clear any remaining timeout
+			if (sendTimeout) {
+				clearTimeout(sendTimeout);
+				sendTimeout = null;
+			}
 		}
+	}
+	
+	function retryLastMessage() {
+		if (!lastSentMessage) return;
+		
+		retryCount++;
+		chatInput = lastSentMessage;
+		sendMessage(true);
+	}
+	
+	function cancelSend() {
+		if (sendTimeout) {
+			clearTimeout(sendTimeout);
+			sendTimeout = null;
+		}
+		
+		// Restore message if it was cleared
+		if (lastSentMessage && !chatInput.trim()) {
+			chatInput = lastSentMessage;
+		}
+		
+		isSending = false;
+		sendStatus = 'idle';
+		lastSentMessage = null;
+		sendError = null;
 	}
 	
 	function handleKeyDown(e: KeyboardEvent) {
@@ -773,6 +869,12 @@
 							break;
 						case 'sdk_message':
 							messages = [...messages, data.data];
+							// Reset send status when we receive a response
+							if (sendStatus === 'sent' || sendStatus === 'sending') {
+								sendStatus = 'idle';
+								lastSentMessage = null;
+								sendError = null;
+							}
 							break;
 						case 'completed':
 							isCompleted = true;
@@ -1409,38 +1511,83 @@
 	{#if sessionId}
 		<div class="border-t border-base-300 bg-base-200">
 			<div class="p-4">
-				<div class="flex gap-2">
-					<textarea
-						bind:value={chatInput}
-						onkeydown={handleKeyDown}
-						placeholder={isCompleted ? "Continue the conversation... (Resume from where we left off)" : "Continue the conversation... (Enter to send, Shift+Enter for new line)"}
-						class="textarea textarea-bordered flex-1 min-h-[60px] max-h-[200px] resize-none"
-						disabled={isSending}
-						rows="2"
-					></textarea>
-					<button 
-						class="btn btn-primary self-end"
-						onclick={sendMessage}
-						disabled={!chatInput.trim() || isSending}
-					>
-						{#if isSending}
-							<span class="loading loading-spinner loading-sm"></span>
-							Sending...
-						{:else if isCompleted}
-							Resume
-						{:else}
-							Send
-						{/if}
-					</button>
+				<div class="flex flex-col gap-2">
+					<div class="flex gap-2">
+						<textarea
+							bind:value={chatInput}
+							onkeydown={handleKeyDown}
+							placeholder={isCompleted ? "Continue the conversation... (Resume from where we left off)" : "Continue the conversation... (Enter to send, Shift+Enter for new line)"}
+							class="textarea textarea-bordered flex-1 min-h-[60px] max-h-[200px] resize-none {sendStatus === 'error' ? 'textarea-error' : sendStatus === 'sent' ? 'textarea-success' : ''}"
+							disabled={isSending}
+							rows="2"
+						></textarea>
+						<div class="flex flex-col gap-1">
+							<button 
+								class="btn {sendStatus === 'sent' ? 'btn-success' : sendStatus === 'error' ? 'btn-error' : 'btn-primary'} self-end"
+								onclick={() => sendMessage()}
+								disabled={!chatInput.trim() || isSending}
+							>
+								{#if isSending}
+									<span class="loading loading-spinner loading-sm"></span>
+									Sending...
+								{:else if sendStatus === 'sent'}
+									✓ Sent
+								{:else if sendStatus === 'error'}
+									⚠ Failed
+								{:else if isCompleted}
+									Resume
+								{:else}
+									Send
+								{/if}
+							</button>
+							{#if sendStatus === 'error' && lastSentMessage}
+								<button 
+									class="btn btn-xs btn-outline"
+									onclick={retryLastMessage}
+									title="Retry sending message"
+								>
+									🔄 Retry
+								</button>
+							{/if}
+							{#if isSending}
+								<button 
+									class="btn btn-xs btn-ghost"
+									onclick={cancelSend}
+									title="Cancel send"
+								>
+									✕ Cancel
+								</button>
+							{/if}
+						</div>
+					</div>
+					
+					<!-- Status messages -->
+					{#if sendError}
+						<div class="text-sm text-error flex items-center gap-2">
+							<span>⚠️ {sendError}</span>
+							{#if retryCount > 0}
+								<span class="badge badge-xs badge-error">Retry #{retryCount}</span>
+							{/if}
+						</div>
+					{:else if sendStatus === 'sending'}
+						<div class="text-sm text-info flex items-center gap-2">
+							<span class="loading loading-spinner loading-xs"></span>
+							Sending message...
+						</div>
+					{:else if sendStatus === 'sent'}
+						<div class="text-sm text-success flex items-center gap-2">
+							<span>✓ Message sent successfully</span>
+						</div>
+					{/if}
 				</div>
 				
-				{#if !isConnected && !isCompleted}
-					<div class="text-sm text-warning mt-2 flex items-center gap-2">
+				{#if !isConnected && !isCompleted && !sendError}
+					<div class="text-sm text-warning flex items-center gap-2">
 						<span class="loading loading-spinner loading-sm"></span>
 						Connecting to session...
 					</div>
-				{:else if isCompleted}
-					<div class="text-sm text-info mt-2">
+				{:else if isCompleted && !sendError}
+					<div class="text-sm text-info">
 						💡 This session has completed. Type a message to resume the conversation with Claude.
 					</div>
 				{/if}
