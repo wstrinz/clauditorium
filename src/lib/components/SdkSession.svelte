@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { SDKMessage } from '@anthropic-ai/claude-code';
 	import { toolApprovalStore } from '$lib/stores/tool-approvals';
+	import { sessionTodosStore, extractTodosFromToolCall, extractTodosFromToolResult, updateSessionTodos, type TodoItem } from '$lib/stores/session-todos';
+	import TodoList from '$lib/components/TodoList.svelte';
 	
 	interface Props {
 		sessionId: string;
@@ -327,6 +329,18 @@
 	// Subscribe to tool approval store to get reactive updates
 	let toolApprovalSettings = $state($toolApprovalStore);
 	
+	// Todo state for this session
+	let sessionTodos = $state<TodoItem[]>([]);
+	
+	// Subscribe to session todos store
+	$effect(() => {
+		const unsubscribe = sessionTodosStore.subscribe(sessions => {
+			sessionTodos = sessions[sessionId] || [];
+		});
+		
+		return unsubscribe;
+	});
+	
 	$effect(() => {
 		const unsubscribe = toolApprovalStore.subscribe(value => {
 			toolApprovalSettings = value;
@@ -490,7 +504,7 @@
 		}
 	}
 	
-	// Detect tool use requests that need approval
+	// Detect tool use requests that need approval and extract todos
 	function extractToolUseRequests(message: SDKMessage) {
 		if (message.type === 'assistant') {
 			const assistantMsg = message as any;
@@ -499,6 +513,14 @@
 				
 				let hasNewTools = false;
 				for (const toolUse of toolUses) {
+					// Extract todos from TodoWrite calls
+					if (toolUse.name === 'TodoWrite') {
+						const extractedTodos = extractTodosFromToolCall(toolUse.name, toolUse.input);
+						if (extractedTodos && sessionId) {
+							updateSessionTodos(sessionId, extractedTodos);
+						}
+					}
+					
 					if (!pendingToolApprovals.has(toolUse.id)) {
 						// First, discover and auto-approve new tools
 						const wasNewlyDiscovered = toolApprovalStore.discoverAndAutoApproveTool(toolUse.name);
@@ -529,6 +551,23 @@
 				// Only update the map reference if we actually added something new
 				if (hasNewTools) {
 					pendingToolApprovals = new Map(pendingToolApprovals);
+				}
+			}
+		} else if (message.type === 'user') {
+			// Extract todos from TodoRead tool results
+			const userMsg = message as any;
+			if (userMsg.message?.content) {
+				for (const content of userMsg.message.content) {
+					if (content.type === 'tool_result') {
+						// Check if this is a TodoRead result by checking the tool request
+						const toolRequest = toolRequestMap().get(content.tool_use_id);
+						if (toolRequest?.name === 'TodoRead') {
+							const extractedTodos = extractTodosFromToolResult(content.tool_use_id, content.content);
+							if (extractedTodos && sessionId) {
+								updateSessionTodos(sessionId, extractedTodos);
+							}
+						}
+					}
 				}
 			}
 		}
@@ -972,7 +1011,9 @@
 		</div>
 	</div>
 {:else}
-	<div class="sdk-session flex flex-col h-full bg-base-200">
+	<div class="sdk-session flex h-full bg-base-200">
+	<!-- Main conversation area -->
+	<div class="flex-1 flex flex-col">
 	<!-- Header -->
 	<div class="p-4 border-b border-base-300 bg-base-200">
 		<div class="flex items-center justify-between mb-3">
@@ -1050,10 +1091,10 @@
 						(showing last 50)
 					{/if}
 				</div>
-			</div>
-	</div>
+				</div>
+		</div>
 
-	<!-- Error display -->
+		<!-- Error display -->
 	{#if error}
 		<div class="alert alert-error m-4">
 			<span>{error}</span>
@@ -1373,9 +1414,20 @@
 				<span class="text-warning">⚠️ Disconnected</span>
 			{/if}
 		</div>
-		{#if !autoScroll}
-			<span class="text-warning">📍 Scroll locked</span>
-		{/if}
+			{#if !autoScroll}
+				<span class="text-warning">📍 Scroll locked</span>
+			{/if}
+		</div>
+	</div>
+	
+	<!-- Todo sidebar -->
+	<div class="w-80 border-l border-base-300 bg-base-100 flex flex-col">
+		<div class="p-3 border-b border-base-300 bg-base-200">
+			<h3 class="text-sm font-semibold">Session Progress</h3>
+		</div>
+		<div class="flex-1 p-3 overflow-y-auto">
+			<TodoList todos={sessionTodos} {sessionId} />
+		</div>
 	</div>
 </div>
 {/if}
