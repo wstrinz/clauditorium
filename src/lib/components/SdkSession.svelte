@@ -419,42 +419,89 @@
 		return false;
 	}
 
-	// Format tool input with proper handling of long strings and newlines
+	// Format tool input with better handling of strings, code, and escape sequences
 	function formatToolInput(input: any): string {
 		if (!input || typeof input !== 'object') {
-			return String(input || '');
+			return cleanAndFormatValue(String(input || ''));
 		}
 
 		const formatted = Object.entries(input).map(([key, value]) => {
-			let valueStr = String(value);
-			
-			// Handle long strings by truncating and showing preview
-			if (valueStr.length > 100) {
-				valueStr = valueStr.substring(0, 100) + '... (truncated)';
-			}
-			
-			// Replace literal \n with actual newlines for better display
-			valueStr = valueStr.replace(/\\n/g, '\n');
-			
-			return `${key}: ${valueStr}`;
-		}).join('\n');
+			const cleanValue = cleanAndFormatValue(String(value));
+			return `${key}: ${cleanValue}`;
+		}).join('\n\n');
 
 		return formatted;
 	}
 
-	// Generate a summary of tool input for compact display
+	// Clean and format individual values
+	function cleanAndFormatValue(value: string): string {
+		if (!value) return '';
+		
+		// Handle common escape sequences
+		let cleaned = value
+			.replace(/\\n/g, '\n')           // Convert literal \n to newlines
+			.replace(/\\t/g, '\t')           // Convert literal \t to tabs
+			.replace(/\\"/g, '"')            // Convert literal \" to quotes
+			.replace(/\\\\/g, '\\');         // Convert literal \\ to single backslash
+		
+		// Limit very long values but be smarter about truncation
+		if (cleaned.length > 300) {
+			// For code-like content, try to preserve structure
+			if (cleaned.includes('\n') && (cleaned.includes('{') || cleaned.includes('<'))) {
+				const lines = cleaned.split('\n');
+				if (lines.length > 10) {
+					cleaned = lines.slice(0, 8).join('\n') + '\n... (truncated)';
+				}
+			} else {
+				cleaned = cleaned.substring(0, 300) + '... (truncated)';
+			}
+		}
+		
+		return cleaned;
+	}
+
+	// Generate a smarter summary of tool input for compact display
 	function getToolInputSummary(input: any): string {
 		if (!input || typeof input !== 'object') {
-			const str = String(input || '');
-			return str.length > 50 ? str.substring(0, 50) + '...' : str;
+			const str = cleanAndFormatValue(String(input || ''));
+			return str.length > 60 ? str.substring(0, 60) + '...' : str;
 		}
 
 		const keys = Object.keys(input);
 		if (keys.length === 0) return 'No parameters';
-		if (keys.length === 1) {
-			const value = String(input[keys[0]]);
-			return `${keys[0]}: ${value.length > 30 ? value.substring(0, 30) + '...' : value}`;
+		
+		// Special handling for common tool patterns
+		if (keys.includes('file_path') && keys.includes('content')) {
+			const fileName = input.file_path ? input.file_path.split('/').pop() : 'file';
+			const contentLength = String(input.content || '').length;
+			return `📝 ${fileName} (${contentLength} chars)`;
 		}
+		
+		if (keys.includes('file_path') && (keys.includes('old_string') || keys.includes('new_string'))) {
+			const fileName = input.file_path ? input.file_path.split('/').pop() : 'file';
+			return `✏️ Edit ${fileName}`;
+		}
+		
+		if (keys.includes('command')) {
+			const cmd = String(input.command || '').split(' ')[0];
+			return `🔧 ${cmd}`;
+		}
+		
+		if (keys.includes('pattern') || keys.includes('query')) {
+			const searchTerm = input.pattern || input.query || '';
+			return `🔍 "${String(searchTerm).substring(0, 30)}"`;
+		}
+		
+		if (keys.includes('todos') && Array.isArray(input.todos)) {
+			return `📋 ${input.todos.length} todo${input.todos.length !== 1 ? 's' : ''}`;
+		}
+		
+		// Default summary for other cases
+		if (keys.length === 1) {
+			const value = cleanAndFormatValue(String(input[keys[0]]));
+			return `${keys[0]}: ${value.length > 40 ? value.substring(0, 40) + '...' : value}`;
+		}
+		
 		return `${keys.length} parameters: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}`;
 	}
 	
@@ -875,10 +922,10 @@
 						if (c.type === 'text') {
 							return c.text;
 						} else if (c.type === 'tool_use') {
-							const input = c.input ? Object.entries(c.input).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ') : '';
 							const approval = pendingToolApprovals.get(c.id);
 							const status = approval?.approved ? '✅ APPROVED' : '⏳ PENDING APPROVAL';
-							return `🔧 Tool request: ${c.name} (${status})\n${input ? `• Input: ${input}` : '• No input parameters'}`;
+							const summary = getToolInputSummary(c.input);
+							return `🔧 Tool request: ${c.name} (${status})\n• ${summary}`;
 						}
 						return '[Content]';
 					}).join('\n\n');
@@ -901,8 +948,8 @@
 								
 								let output = '';
 								if (toolRequest) {
-									const input = toolRequest.input ? Object.entries(toolRequest.input).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ') : '';
-									output += `🔧 Tool Request: ${toolRequest.name}\n${input ? `• Input: ${input}` : '• No input parameters'}\n\n`;
+									const summary = getToolInputSummary(toolRequest.input);
+									output += `🔧 Tool Request: ${toolRequest.name}\n• ${summary}\n\n`;
 								}
 								output += `📤 Tool Result (${c.tool_use_id?.substring(0, 8) || 'unknown'}):\n${preview}`;
 								return output;
@@ -921,8 +968,8 @@
 								
 								let output = '';
 								if (toolRequest) {
-									const input = toolRequest.input ? Object.entries(toolRequest.input).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ') : '';
-									output += `🔧 Tool Request: ${toolRequest.name}\n${input ? `• Input: ${input}` : '• No input parameters'}\n\n`;
+									const summary = getToolInputSummary(toolRequest.input);
+									output += `🔧 Tool Request: ${toolRequest.name}\n• ${summary}\n\n`;
 								}
 								output += `📤 Tool Result (${c.tool_use_id?.substring(0, 8) || 'unknown'}):\n${preview}`;
 								return output;
